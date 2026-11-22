@@ -23,6 +23,7 @@ class Run(Base):
     paused_reason = Column(String, nullable=True)
     ingestion_mode = Column(String, nullable=False, default='preloaded_daily')
     event_source_path = Column(String, nullable=True)
+    forecast_provider = Column(String, nullable=False, default='external')  # 'external' (imported references) | 'tabpfn' (worker-issued, backend/forecasting.py)
     sim_clock_utc = Column(DateTime(timezone=True), nullable=True)
     last_tick_wall_utc = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)

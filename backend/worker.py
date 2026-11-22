@@ -1,4 +1,5 @@
 import os, time
+import env  # noqa: F401 — loads the repo-root .env before models reads DATABASE_URL
 from sqlalchemy import select
 from models import initialize, SessionLocal, Command, Run, utcnow
 from core import execute_command, run_step, advance_run_live

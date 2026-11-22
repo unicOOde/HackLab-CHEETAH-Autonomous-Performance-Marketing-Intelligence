@@ -1,0 +1,5 @@
+# Optional: TabPFN-TS forecast service (backend/forecasting.py, PDR module FC-01).
+# Kept separate from requirements.txt because it pulls in torch (~1.5 GB venv). Without it the
+# forecast service reports `not_configured` and tabpfn runs emit forecast.unavailable.
+# Cloud mode (TabPFNMode.CLIENT) needs TABPFN_TOKEN in the environment.
+tabpfn-time-series==1.4.0

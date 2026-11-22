@@ -5,6 +5,7 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from agent_runtime import publish_event
 from models import Run, Event, Command, DailyAmount, SourceEvent, ForecastReference, ForecastValue, Incident, Action, AgentTask, RunMetrics, RunCampaignSeen, utcnow
+import forecasting
 
 DAY_START='2026-10-01'
 DAY_END='2026-10-31'
@@ -16,16 +17,23 @@ def emit(db, run_id, event_type, payload, business_date=None):
     db.add(Event(run_id=run_id,event_type=event_type,payload=json.dumps(payload),business_date=business_date))
 
 def serialize_run(run):
-    return {'run_id':run.id,'status':run.status,'mode':run.mode,'speed_seconds':run.speed_seconds,'simulated_day':run.simulated_day,'simulation_date':MONTH_DAYS[run.simulated_day-1] if run.simulated_day else None,'dataset_id':run.dataset_id,'graph_version':run.graph_version,'paused_reason':run.paused_reason,'parent_run_id':run.parent_run_id,'replay_type':run.replay_type,'ingestion_mode':run.ingestion_mode}
+    return {'run_id':run.id,'status':run.status,'mode':run.mode,'speed_seconds':run.speed_seconds,'simulated_day':run.simulated_day,'simulation_date':MONTH_DAYS[run.simulated_day-1] if run.simulated_day else None,'dataset_id':run.dataset_id,'graph_version':run.graph_version,'paused_reason':run.paused_reason,'parent_run_id':run.parent_run_id,'replay_type':run.replay_type,'ingestion_mode':run.ingestion_mode,'forecast_provider':run.forecast_provider}
+
+def reference_source(run):
+    """tabpfn runs only ever evaluate against (and display) their own worker-issued references,
+    never externally imported/naive ones that may share the same dataset_id."""
+    return forecasting.SOURCE if run.forecast_provider=='tabpfn' else None
 
 def check_31_days(db, dataset_id):
     if not dataset_id:return False
     days=set(db.scalars(select(DailyAmount.day).where(DailyAmount.dataset_id==dataset_id)).all())
     return set(MONTH_DAYS)==days
 
-def forecast_for(db, dataset_id, day):
+def forecast_for(db, dataset_id, day, source=None):
     if not dataset_id: return None
-    return db.scalars(select(ForecastReference).where(ForecastReference.dataset_id==dataset_id,ForecastReference.reference_day==day,ForecastReference.issue_day==prior(day)).order_by(ForecastReference.created_at.desc())).first()
+    stmt=select(ForecastReference).where(ForecastReference.dataset_id==dataset_id,ForecastReference.reference_day==day,ForecastReference.issue_day==prior(day))
+    if source:stmt=stmt.where(ForecastReference.source==source)
+    return db.scalars(stmt.order_by(ForecastReference.created_at.desc())).first()
 
 def prior(day):
     d=datetime.fromisoformat(day).date()
@@ -49,7 +57,7 @@ def close_day(db, run, day, amount):
     scheduler (amount = a DailyAmount row the worker just computed and is about to commit)."""
     metrics={'date':day,'amount':amount.amount,'commission':amount.commission,'payout':amount.payout,'margin':amount.margin,'source_kind':amount.source_kind,'finalized':True}
     emit(db,run.id,'revenue.daily_finalized',metrics,day)
-    ref=forecast_for(db,run.dataset_id,day)
+    ref=forecast_for(db,run.dataset_id,day,reference_source(run))
     if not ref:
         emit(db,run.id,'forecast.reference_unavailable',{'date':day,'reason':'missing_prior_day_reference'},day)
     else:
@@ -93,6 +101,15 @@ def run_step(db, run):
         emit(db,run.id,'source.events_batch',{'date':day,'count':len(payload),'events':payload},day)
     close_day(db,run,day,amount)
     emit(db,run.id,'simulation.state_changed',serialize_run(run),day)
+    db.commit()
+    if run.forecast_provider=='tabpfn':forecast_after_close(db,run,day)
+
+def forecast_after_close(db, run, day):
+    """FC-01 hook: issue the D+1 forecast once day D's close is committed, so the (possibly slow)
+    provider call never runs inside the day-close write transaction. Runs even when the close
+    paused the run on an anomaly — nothing can change D's data between close and resume."""
+    db.commit()
+    forecasting.issue_forecast(db,run,day,emit)
     db.commit()
 
 # ---- live_events scheduler ----
@@ -223,6 +240,12 @@ def _advance_to(db, run, state, target, row_cap=LIVE_TICK_ROW_CAP):
         run.sim_clock_utc=boundary
         if boundary<day_end:return
         _close_live_day(db,run,state,day)
+        if run.forecast_provider=='tabpfn':
+            forecast_after_close(db,run,day)
+            # Inference wall-time must not become simulated time (same mechanism as resume/restart),
+            # and day D+1 starts only on the next tick, after its reference is locked.
+            run.last_tick_wall_utc=None
+            return
         if run.status!='running':return
         if boundary>=target:return
 

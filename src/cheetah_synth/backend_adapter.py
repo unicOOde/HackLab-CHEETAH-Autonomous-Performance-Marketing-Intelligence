@@ -147,8 +147,27 @@ def build_source_events(journeys: pd.DataFrame, include_non_converting_sample: i
     return events
 
 
+def _backend_provider(forecast_provider: str) -> str:
+    """CLI name -> backend Run.forecast_provider. 'tabpfn' runs get their references from the
+    backend worker (backend/forecasting.py); 'naive' runs use the imported placeholder band."""
+    if forecast_provider not in ("naive", "tabpfn"):
+        raise ValueError(f"unknown forecast_provider {forecast_provider!r}")
+    return "tabpfn" if forecast_provider == "tabpfn" else "external"
+
+
+def _push_naive_references(backend_url: str, dataset_id: str, journeys: pd.DataFrame,
+                           forecast_provider: str) -> dict[str, Any]:
+    if forecast_provider == "tabpfn":
+        return {"references": 0}  # the worker issues TabPFN references itself, day by day
+    references = build_naive_references(build_daily_amounts(journeys), dataset_id)
+    refs_resp = _post(backend_url, "/api/v1/forecasts/references",
+                      {"dataset_id": dataset_id, "references": references})
+    return {"references": len(references), "references_response": refs_resp}
+
+
 def register_live_run(run_dir: Path, backend_url: str, dataset_id: str,
-                       create_run: bool = True, start: bool = False) -> dict[str, Any]:
+                       create_run: bool = True, start: bool = False,
+                       forecast_provider: str = "naive") -> dict[str, Any]:
     """Registers a run for the backend's `live_events` ingestion mode: the worker streams
     `event_timeline.parquet` in live, per event, as the simulated clock advances — see
     `event_timeline.py`. Unlike `push_run_to_backend()`, this does NOT bulk-POST DailyAmount or
@@ -165,19 +184,15 @@ def register_live_run(run_dir: Path, backend_url: str, dataset_id: str,
     # wrong place server-side, so always send an absolute path.
     timeline_path = timeline_path.resolve()
 
-    daily_amounts = build_daily_amounts(load_journeys(run_dir))
-    references = build_naive_references(daily_amounts, dataset_id)
-    refs_resp = _post(backend_url, "/api/v1/forecasts/references",
-                       {"dataset_id": dataset_id, "references": references})
-
-    result = {"dataset_id": dataset_id, "references": len(references),
-              "references_response": refs_resp, "event_source_path": str(timeline_path)}
+    result = {"dataset_id": dataset_id, "event_source_path": str(timeline_path)}
+    result.update(_push_naive_references(backend_url, dataset_id, load_journeys(run_dir), forecast_provider))
 
     if create_run:
         run_resp = _post(backend_url, "/api/v1/runs", {
             "dataset_id": dataset_id,
             "ingestion_mode": "live_events",
             "event_source_path": str(timeline_path),
+            "forecast_provider": _backend_provider(forecast_provider),
         })
         result["run_id"] = run_resp["run_id"]
         if start:
@@ -189,7 +204,7 @@ def register_live_run(run_dir: Path, backend_url: str, dataset_id: str,
 def push_run_to_backend(run_dir: Path, backend_url: str, dataset_id: str,
                          include_non_converting_sample: int = 0, seed: int = 0,
                          create_run: bool = True, start: bool = False,
-                         event_batch_size: int = 500) -> dict[str, Any]:
+                         event_batch_size: int = 500, forecast_provider: str = "naive") -> dict[str, Any]:
     journeys = load_journeys(run_dir)
 
     daily_amounts = build_daily_amounts(journeys)
@@ -201,16 +216,13 @@ def push_run_to_backend(run_dir: Path, backend_url: str, dataset_id: str,
         _post(backend_url, "/api/v1/datasets/events",
               {"dataset_id": dataset_id, "events": events[i:i + event_batch_size]})
 
-    references = build_naive_references(daily_amounts, dataset_id)
-    refs_resp = _post(backend_url, "/api/v1/forecasts/references",
-                       {"dataset_id": dataset_id, "references": references})
-
     result = {"dataset_id": dataset_id, "daily_amounts": len(daily_amounts),
-              "source_events": len(events), "references": len(references),
-              "daily_response": daily_resp, "references_response": refs_resp}
+              "source_events": len(events), "daily_response": daily_resp}
+    result.update(_push_naive_references(backend_url, dataset_id, journeys, forecast_provider))
 
     if create_run:
-        run_resp = _post(backend_url, "/api/v1/runs", {"dataset_id": dataset_id})
+        run_resp = _post(backend_url, "/api/v1/runs", {
+            "dataset_id": dataset_id, "forecast_provider": _backend_provider(forecast_provider)})
         result["run_id"] = run_resp["run_id"]
         if start:
             _post(backend_url, f"/api/v1/runs/{run_resp['run_id']}/commands", {"command": "start"})

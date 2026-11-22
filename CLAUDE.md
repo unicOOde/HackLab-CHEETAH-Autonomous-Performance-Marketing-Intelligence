@@ -149,9 +149,17 @@ logo image not yet referenced by the HTML itself.
   `CORS_ORIGINS` — see `backend/.env.example`. Local dev defaults to SQLite
   (`sqlite:///./cheetah_dev.db`) and is explicitly single-worker only — never use it for a
   multi-worker/production deployment.
+- **TabPFN-TS forecast service (FC-01)** is implemented in `backend/forecasting.py` for runs created with
+  `forecast_provider='tabpfn'` (`push-to-backend --forecast-provider tabpfn`, or
+  `FORECAST_PROVIDER=tabpfn ./start_backend.sh`, which picks `tabpfn` by default when `/health` reports it configured). It uses cloud mode,
+  needs `TABPFN_TOKEN` and `backend/requirements-forecast.txt` (pulls torch), and warms up for 7 days. It is triggered at each
+  day rollover (emits `forecast.requested`) and forecasts 7 days ahead (`FORECAST_HORIZON_DAYS`) from the last 7 closed days
+  (`FORECAST_CONTEXT_DAYS`). Only D+1 is locked. It is unavailable (never a fallback) on error. `backend/env.py` loads the repo-root
+  `.env` into `os.environ` at API/worker start (never overriding set vars; tests set `CHEETAH_SKIP_DOTENV=1`). Backtest: `.venv-backend/bin/python backend/forecast_backtest.py`.
+  Importing `tabpfn` reads `.env` from the cwd and needs the certifi CA bundle, so it can't run in the Claude Code sandbox.
 - **Deliberately not implemented** (per `README.md` / `backend/README.md` — don't build around
   these as if they're just missing, they're explicitly deferred by the product owner pending
-  inputs): TabPFN-TS inference, Claude Investigator/Evidence Reviewer (bounded ReAct), Neo4j/MCP
+  inputs): Claude Investigator/Evidence Reviewer (bounded ReAct), Neo4j/MCP
   graph, sandbox fix actions (causal intervention/rollback), Learning Replay and Fix Validation
   Replay (API returns `409` until checkpoint/graph-versioning adapters exist), real Oct 2026
   click/install source data (only isolated test fixtures exist, never loaded into the UI),

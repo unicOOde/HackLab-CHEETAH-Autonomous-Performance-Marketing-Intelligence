@@ -115,12 +115,17 @@ def test_provider_error_is_explicit_unavailable_and_never_an_incident(provider,m
         assert db.query(ForecastReference).filter(ForecastReference.dataset_id==name).count()==0
 
 
-def test_not_configured_without_token():
+def test_not_configured_without_token(monkeypatch,tmp_path):
     assert forecasting.config()['status']=='not_configured'  # TABPFN_TOKEN removed at import
     health=client.get('/api/v1/health').json()
     assert health['forecast_provider']=='not_configured' and health['forecast']['token_loaded'] is False
-    status={a['name']:a['status'] for a in client.get('/api/v1/agents/status').json()['agents']}
-    assert status['Forecast Service']=='not_configured'
+    monkeypatch.setenv('CHEETAH_BUS_DIR',str(tmp_path))  # an existing (empty) agent bus
+    status={a['agent']:a['health'] for a in client.get('/api/v1/agents/status').json()['agents']}
+    assert status['forecast_service']=='not_configured'
+    monkeypatch.setattr(forecasting,'config',lambda:{'status':'configured'})
+    status={a['agent']:a['health'] for a in client.get('/api/v1/agents/status').json()['agents']}
+    assert status['forecast_service']==status['deviation_detector']  # runs in the worker loop once configured
+    monkeypatch.undo()
     name,run_id=_preloaded_run([100.0]*31)
     with SessionLocal() as db:
         run=db.get(Run,run_id)

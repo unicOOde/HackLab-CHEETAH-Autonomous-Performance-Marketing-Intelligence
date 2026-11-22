@@ -415,7 +415,9 @@ class MetricSubmission(BaseModel):
     config:dict|None=None
 
 @app.get('/api/v1/agents/status')
-def agent_status():return agent_api.status()
+def agent_status():
+    configured=['forecast_service'] if forecasting.config()['status']=='configured' else []
+    return agent_api.status(configured=configured)
 
 @app.get('/api/v1/agents/messages')
 def agent_messages(limit:int=50,type:str|None=None,agent:str|None=None):

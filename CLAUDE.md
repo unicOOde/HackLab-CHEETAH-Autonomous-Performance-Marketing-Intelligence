@@ -157,6 +157,17 @@ logo image not yet referenced by the HTML itself.
   (`FORECAST_CONTEXT_DAYS`). Only D+1 is locked. It is unavailable (never a fallback) on error. `backend/env.py` loads the repo-root
   `.env` into `os.environ` at API/worker start (never overriding set vars; tests set `CHEETAH_SKIP_DOTENV=1`). Backtest: `.venv-backend/bin/python backend/forecast_backtest.py`.
   Importing `tabpfn` reads `.env` from the cwd and needs the certifi CA bundle, so it can't run in the Claude Code sandbox.
+- **Neo4j day layer** (`backend/graph_sync.py`, via `core.graph_after_close`). Every closed day of every run, after the close commits
+  and **before** the TabPFN forecast, it writes that day's metrics from the stored `SourceEvent`s:
+  - `(Dataset)-[:CLOSED_DAY]->(Day)` (marketplace)
+  - `(Ad)-[:ON_DAY]->(Day)` (campaign)
+  - `(Ad)-[:ON_DAY_IN {country}]->(Day)` (report row)
+
+  The edges carry totals, ratios and a trailing 7-day baseline. Ads, countries, verticals, categories and days
+  are MERGEd by id onto the monthly graph. One dataset at a time: a new dataset's first sync deletes the old
+  day layer. It needs `NEO4J_URI`/`NEO4J_PASSWORD` and the `neo4j` driver. It emits `graph.synced`, or
+  `graph.sync_unavailable` and continues. `/health`'s `graph_provider` reflects its config. Tests:
+  `tests/test_backend_graph_sync.py` (fake writer).
 - **Deliberately not implemented** (per `README.md` / `backend/README.md` — don't build around
   these as if they're just missing, they're explicitly deferred by the product owner pending
   inputs): Claude Investigator/Evidence Reviewer (bounded ReAct), Neo4j/MCP
@@ -274,7 +285,8 @@ Principles:
 ### Planned extensions (agreed, not built yet)
 - **Time axis:** `(:Day)` nodes plus per-day aggregate edges (e.g. `Ad-[:ON_DAY {tx, commission, …}]->Day`,
   and Ad × Country × Day where monitoring needs it). Monitoring reads time series straight from
-  Neo4j. Bucket outcomes by conversion `Time` and cohort metrics (lag, instant share) by `Click Time`.
+  Neo4j. *Partly built:* the streamed run's day layer (`ON_DAY` / `ON_DAY_IN` / `CLOSED_DAY`,
+  written by `backend/graph_sync.py`, see Track A). A day axis from the real transaction files is still open. Bucket outcomes by conversion `Time` and cohort metrics (lag, instant share) by `Click Time`.
 - **Metric nodes:** `(:Metric {name, definition, cypher|formula, unit})` with edges between metrics
   (e.g. `FORMULA` for exact arithmetic decompositions like `commission = gmv * comm_rate`, and
   `INFLUENCES` for possible causes with a weight and a status `hypothesis|validated|rejected`).

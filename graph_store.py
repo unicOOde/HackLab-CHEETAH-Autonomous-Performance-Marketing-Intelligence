@@ -26,12 +26,14 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 BASE_LABELS = {"Freecash", "Ad", "Country", "Category", "Vertical", "ClickHour",
                "LagBucket", "TransactionType", "Currency", "Month",
-               "Metric", "Day", "Hour", "PlannedEvent"}          # paid_sim.py / paid_metrics.py
+               "Metric", "Day", "Hour", "PlannedEvent",          # paid_sim.py / paid_metrics.py
+               "Dataset"}                                        # backend/graph_sync.py
 AGENT_LABELS = {"Outage", "Hypothesis", "Signal"}
 ALL_LABELS = BASE_LABELS | AGENT_LABELS
 AGGREGATE_RELS = {"RUNS", "HAS_TYPE", "CONVERTS_IN", "CLICKED_AT", "CONVERTS_AFTER",
                   "IN_VERTICAL", "IN_CATEGORY", "PAID_IN", "ACTIVE_IN",
-                  "PAID_IN_HOUR", "IN_DAY", "FORMULA", "INFLUENCES", "APPLIES_TO"}
+                  "PAID_IN_HOUR", "IN_DAY", "FORMULA", "INFLUENCES", "APPLIES_TO",
+                  "CLOSED_DAY", "ON_DAY", "ON_DAY_IN"}           # backend/graph_sync.py
 RESERVED_RELS = {"CHANGED"}
 RESERVED_EDGE_PROPS = {"agent", "created"}
 STATUSES = {"open", "resolved", "confirmed", "rejected"}

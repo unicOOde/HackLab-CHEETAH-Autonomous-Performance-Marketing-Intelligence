@@ -7,3 +7,4 @@ pytest>=8,<10
 httpx>=0.27,<1
 pandas>=2.0,<3
 pyarrow>=14,<19
+neo4j>=5,<6

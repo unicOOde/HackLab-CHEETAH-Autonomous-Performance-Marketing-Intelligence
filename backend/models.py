@@ -55,6 +55,8 @@ class SourceEvent(Base):
     commission = Column(Float, nullable=True)
     payout = Column(Float, nullable=True)
     margin = Column(Float, nullable=True)
+    vertical = Column(String, nullable=True)
+    category = Column(String, nullable=True)
     payload = Column(Text, nullable=False, default='{}')
     __table_args__ = (
         UniqueConstraint('dataset_id','kind','source_id'),

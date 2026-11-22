@@ -15,12 +15,24 @@ import pandas as pd
 
 EVENT_TIMELINE_COLUMNS = [
     "event_time_utc", "kind", "source_id", "game_placement_id", "country",
-    "amount", "commission", "payout", "margin", "event_day",
+    "amount", "commission", "payout", "margin", "vertical", "category", "event_day",
 ]
 
 
-def build_event_timeline(journeys: pd.DataFrame) -> pd.DataFrame:
+def _meta_cols(placement_meta, placement_ids):
+    """vertical/category are placement-level attributes (knowable for any click regardless of
+    whether it converts, via calibration.placement_meta) — not reused from journeys' own
+    vertical/category columns, which are only filled in for converting rows."""
+    n = len(placement_ids)
+    if placement_meta is None:
+        return np.array([None] * n, dtype=object), np.array([None] * n, dtype=object)
+    meta = placement_meta.reindex(np.asarray(placement_ids))
+    return meta["vertical"].to_numpy(), meta["category"].to_numpy()
+
+
+def build_event_timeline(journeys: pd.DataFrame, placement_meta: pd.DataFrame = None) -> pd.DataFrame:
     n = len(journeys)
+    click_vertical, click_category = _meta_cols(placement_meta, journeys["game_placement_id"].to_numpy())
     clicks = pd.DataFrame({
         "event_time_utc": journeys["time"].to_numpy(),
         "kind": "click",
@@ -31,10 +43,13 @@ def build_event_timeline(journeys: pd.DataFrame) -> pd.DataFrame:
         "commission": np.full(n, np.nan),
         "payout": np.full(n, np.nan),
         "margin": np.full(n, np.nan),
+        "vertical": click_vertical,
+        "category": click_category,
     })
 
     converted = journeys[journeys["converts"] & ~journeys["censored"]]
     m = len(converted)
+    install_vertical, install_category = _meta_cols(placement_meta, converted["game_placement_id"].to_numpy())
     installs = pd.DataFrame({
         "event_time_utc": converted["conversion_time"].to_numpy(),
         "kind": "install",
@@ -45,6 +60,8 @@ def build_event_timeline(journeys: pd.DataFrame) -> pd.DataFrame:
         "commission": converted["commission"].to_numpy(),
         "payout": converted["payout"].to_numpy(),
         "margin": converted["margin"].to_numpy(),
+        "vertical": install_vertical,
+        "category": install_category,
     }) if m else pd.DataFrame(columns=clicks.columns)
 
     timeline = pd.concat([clicks, installs], ignore_index=True)

@@ -128,6 +128,7 @@ def _deliver_rows(db, run, state, lo, hi):
     import pandas as pd
     df=state['df']
     chunk=df.iloc[lo:hi]
+    has_meta='vertical' in df.columns  # backward-compat: older event_timeline.parquet files predate vertical/category
     rows=[{
         'dataset_id':run.dataset_id,'kind':r.kind,'source_id':r.source_id,
         'event_time_utc':r.event_time_utc.isoformat(),'event_day':r.event_day,
@@ -136,6 +137,8 @@ def _deliver_rows(db, run, state, lo, hi):
         'commission':None if pd.isna(r.commission) else float(r.commission),
         'payout':None if pd.isna(r.payout) else float(r.payout),
         'margin':None if pd.isna(r.margin) else float(r.margin),
+        'vertical':(None if pd.isna(r.vertical) else r.vertical) if has_meta else None,
+        'category':(None if pd.isna(r.category) else r.category) if has_meta else None,
         'payload':'{}',
     } for r in chunk.itertuples()]
     db.bulk_insert_mappings(SourceEvent, rows)

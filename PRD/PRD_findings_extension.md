@@ -80,3 +80,31 @@ likely be ingested with no code changes.
 engineering wall. If Track B should eventually react to the same injected anomalies, the Day-node
 extension needs to land first — then feeding it synthetic data becomes a live option rather than a
 blocked one.
+
+## 2026-11-22 — Reports screen goes live: known, deliberate limitations
+
+**Decision:** The Reports screen's "Combined event feed"/"Click Events"/"Install Transaction
+Report"/"Performance Report"/"Time Series" tabs were switched from a 12-row static sample to a
+real paginated/filterable backend (`GET /runs/{id}/source_events`, `GET /runs/{id}/performance_report`),
+live-updating via SSE. Three scope calls were made to keep this change contained rather than
+open-ended, recorded here so they read as intentional rather than overlooked:
+
+- **Campaign/Country filter dropdowns still list only the original 12 static sample values** —
+  not a live-updating enumeration of every placement/country a run has actually seen. Building
+  that would need a new "distinct values for this run" backend endpoint, which was out of scope
+  for this pass. The free-text search box (`q`, matched server-side against `source_id`/
+  `game_placement_id`/`country`) is the practical workaround for looking up a specific ID at live
+  scale.
+- **Performance Report's column headers are no longer click-to-sort.** The old static version's
+  sort was a pure in-memory array sort over 3 rows; this tab's data is now fetched from a live
+  aggregation endpoint, and wiring a generic re-sort-and-refetch mechanism for it felt like scope
+  creep beyond "make the data live." The report still renders in a stable (group-by) order.
+- **`q` free-text search is narrower than before.** The legacy client-side search matched the
+  stringified value of every column (including amounts/dates) over an in-memory array of 9 rows.
+  The live backend's `q` is scoped to `source_id`/`game_placement_id`/`country` only — a full
+  cross-column text index over a potentially multi-million-row table was judged unnecessary for
+  this round; use the explicit date-range (`event_day_from`/`event_day_to`) and kind filters for
+  anything `q` doesn't cover.
+
+None of these block the core ask (live data, not static samples) — they're narrower-than-ideal
+UX/filtering completeness, not missing data or fabricated values.

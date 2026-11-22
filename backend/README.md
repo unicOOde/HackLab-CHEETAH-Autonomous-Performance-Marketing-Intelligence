@@ -16,6 +16,10 @@ There's no migration tooling in this repo — `models.initialize()` (called on A
 - Daily aggregate Amount evaluation and automatic pause on upper/lower bound breach.
 - Incident log and blocked agent audit task when Claude/context/evidence not available.
 - UI-ready health, run snapshots, run list and read models for incidents.
+- Genuinely live, per-event ingestion (`ingestion_mode='live_events'`, see below) as an alternative
+  to the bulk-preload default.
+- Paginated/filterable/CSV-exportable browsing of the full `source_events` table, and a live
+  Performance Report rollup — see "Live Reports & Marketplace endpoints" below.
 
 ## Deferred adapters / reasons
 
@@ -24,7 +28,12 @@ There's no migration tooling in this repo — `models.initialize()` (called on A
 - Neo4j MCP requires ontology and graph credentials. The context read endpoint returns an empty unavailable model.
 - Sandbox Fix Action requires scenario-specific causal intervention controls, approvals and rollback policy.
 - Learning and Fix Validation replay need checkpoint snapshots and approved graph/intervention versioning. Endpoints reject rather than fake a result.
-- Source click/install live batching requires full click/install datasets. Original v1.4 sample records remain display-only reference fixtures. A synthetic (not real) stand-in dataset and a push adapter exist at `../src/cheetah_synth/` / `PYTHONPATH=src python -m cheetah_synth.cli push-to-backend` for demo/dev purposes — see the repo root `README.md`'s "Synthetic demo data" section.
+- Real October 2026 click/install data is still not loaded — only a calibrated synthetic stand-in
+  (`../src/cheetah_synth/`, pushed via `PYTHONPATH=src python -m cheetah_synth.cli push-to-backend`,
+  see the repo root `README.md`'s "Test run" section). Original v1.4 sample records remain
+  display-only reference fixtures when no run is connected. Live, per-event batching of that
+  synthetic data **is** implemented (`ingestion_mode='live_events'`, below) — what's deferred is
+  specifically the real dataset, not the live-ingestion mechanism itself.
 
 ## Ingestion modes: `preloaded_daily` vs `live_events`
 
@@ -57,6 +66,37 @@ subsequent ticks rather than losing data, but won't match the requested pace). T
 requires `pandas`/`pyarrow` (now in `requirements.txt`) and, for the local SQLite dev DB,
 relies on `PRAGMA journal_mode=WAL`/`synchronous=NORMAL` (set automatically on connect in
 `models.py`) — safe because this architecture is already explicitly single-writer, as above.
+
+## Live Reports & Marketplace endpoints
+
+Beyond the snapshot/SSE path (built for the dashboard's recent-tail/live-ticker views), two
+endpoints exist specifically to browse/aggregate the full `source_events` table, at real scale:
+
+- `GET /api/v1/runs/{id}/source_events` — filterable (`kind`, `game_placement_id`, `country`,
+  `event_day_from`/`event_day_to`, `q` — free text matched against `source_id`/`game_placement_id`/
+  `country` only, not every column) and keyset-paginated on the row's own primary key (`cursor`/
+  `limit`, response includes `next_cursor`/`total_count`). `&format=csv` streams the *entire*
+  filtered set (not just one page) as a CSV download, batching server-side so it works at
+  multi-million-row scale without loading it all into memory at once.
+- `GET /api/v1/runs/{id}/performance_report` — a live `GROUP BY (game_placement_id, country)`
+  rollup matching the real Performance Report's grain (a segment only gets a row once it has a
+  conversion, same as the real export). `conversion_rate`/`ecpc`/`roas` are computed from live
+  click/install counts using the exact formulas already in `cheetah_synth/export.py`'s
+  `populate_derived_metrics` — the *real* file itself leaves these NaN, so treat these as a live
+  enhancement, not parity with a sourced value. `clicks` is included per row (used by the frontend
+  to correctly re-aggregate EPC across a campaign's countries — summing clicks and commission
+  separately before dividing, not averaging per-country ratios). `freecash_id`/`freecash_adspace_id`/
+  `ecpm`/`ctr` are always `null` — not pushed to the backend, or (for ecpm/ctr) flatly uncomputable
+  without impression data that doesn't exist anywhere, real or synthetic.
+
+`SourceEvent` also carries `vertical`/`category` (nullable `String`) — placement-level attributes
+looked up via `calibration.placement_meta` and carried through `event_timeline.py`, present for
+*any* click on a known placement (not just converting rows, since they're a property of the
+placement, not the conversion). Regenerate an older `event_timeline.parquet` with
+`cheetah-synth build-timeline --run-id <id>` to backfill these columns on an existing run directory.
+
+Tests: `tests/test_backend_reports.py` (filtering, pagination, CSV content, hand-verified
+conversion_rate/ecpc/roas math against a small fixture).
 
 ## Local backend requires Python 3.10+
 

@@ -66,6 +66,41 @@ class TestEventTimeline(unittest.TestCase):
         for col in ("amount", "commission", "payout", "margin"):
             self.assertTrue(clicks[col].isna().all())
 
+    def test_vertical_category_absent_without_placement_meta(self):
+        timeline = build_event_timeline(_make_journeys())
+        self.assertTrue(timeline["vertical"].isna().all())
+        self.assertTrue(timeline["category"].isna().all())
+
+    def test_vertical_category_known_even_for_non_converting_clicks(self):
+        # vertical/category are placement-level attributes (knowable from game_placement_id
+        # alone), not conversion-level — a non-converting click on a known placement should
+        # still get a value, not just converting journeys.
+        placement_meta = pd.DataFrame(
+            {"vertical": ["Gaming"], "category": ["Action"]}, index=["00035m"]
+        )
+        timeline = build_event_timeline(_make_journeys(), placement_meta)
+        non_converting_click = timeline[(timeline["kind"] == "click") & (timeline["source_id"] == "100")].iloc[0]
+        self.assertEqual(non_converting_click["vertical"], "Gaming")
+        self.assertEqual(non_converting_click["category"], "Action")
+
+    def test_vertical_category_unknown_placement_is_null(self):
+        placement_meta = pd.DataFrame(
+            {"vertical": ["Gaming"], "category": ["Action"]}, index=["00035m"]
+        )
+        timeline = build_event_timeline(_make_journeys(), placement_meta)
+        unknown = timeline[timeline["game_placement_id"] == "00077q"]
+        self.assertTrue(unknown["vertical"].isna().all())
+        self.assertTrue(unknown["category"].isna().all())
+
+    def test_install_also_gets_vertical_category_from_placement_meta(self):
+        placement_meta = pd.DataFrame(
+            {"vertical": ["Gaming"], "category": ["Action"]}, index=["00035m"]
+        )
+        timeline = build_event_timeline(_make_journeys(), placement_meta)
+        install = timeline[timeline["kind"] == "install"].iloc[0]
+        self.assertEqual(install["vertical"], "Gaming")
+        self.assertEqual(install["category"], "Action")
+
 
 if __name__ == "__main__":
     unittest.main()

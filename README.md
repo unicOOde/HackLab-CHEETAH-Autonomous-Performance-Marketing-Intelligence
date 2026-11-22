@@ -7,8 +7,8 @@ This package implements the approved FE-01–FE-10 **frontend design changes** a
 
 ## Included
 
-- `frontend/CHEETAH_UI_Prototype_v1.5.html`: standalone enhanced UI with October aggregate-first UX, simulation controls, Evidence Reviewer panel, governed-action panel, two replay options, neutral campaign indicators, graph lifecycle legend and SSE/API integration. Original source samples remain explicitly marked as samples when offline.
-- `CHEETAH_Product_and_Integration_Spec_v1.5.docx`: approved requirements, architecture, service contracts, acceptance cases and implementation limits.
+- `frontend/CHEETAH_UI_Prototype_v1.5.html`: standalone enhanced UI with October aggregate-first UX, simulation controls, Evidence Reviewer panel, governed-action panel, two replay options, neutral campaign indicators, graph lifecycle legend and SSE/API integration. Original source samples remain explicitly marked as samples when offline — Forecast's event feed, the whole Reports screen (all five tabs), and the live half of Marketplace (tile list + campaign Commission/EPC/Country Revenue) switch to real live data the moment a run is connected; Marketplace's forecast-status pill and Baseline & investigation panel stay hardcoded by design (MVP 2 / Investigator scope).
+- `PRD/Master_PDR_v2.0.pdf`/`.docx`: approved requirements, architecture, service contracts, acceptance cases and implementation limits (supersedes the older `CHEETAH_Product_and_Integration_Spec_v1.5.docx`, no longer in the repo). `PRD/PRD_findings_extension.md` logs decisions settled after it.
 - `backend/app.py`, `models.py`, `core.py`, `worker.py`: FastAPI endpoints, SQLAlchemy models, durable command queue, October source/daily forecast ingestion, daily revenue evaluation, automatic pause, incident records, source-event batches and SSE.
 - `docker-compose.yml`, `Dockerfile`, `.env.example`: local infrastructure for PostgreSQL, API, one worker and Neo4j (Neo4j model itself pending).
 - `tests/test_backend.py`: smoke tests using isolated test-only values, not data included with the product.
@@ -32,8 +32,13 @@ This package implements the approved FE-01–FE-10 **frontend design changes** a
 - Neo4j/MCP model, graph proposal approval and learning commit.
 - Sandbox action effects, guardrails, rollback, causal intervention mechanics.
 - Checkpoint-backed Learning Replay and Fix Validation Replay. The API currently **rejects replay requests** until these adapters exist; frontend buttons accurately surface that state.
-- True intra-day source-event staggering; the initial worker publishes per-day source-event batches during accelerated playback.
 - Production authentication, concurrency hardening and deployment security.
+
+~~True intra-day source-event staggering~~ — **now implemented** for the `live_events` ingestion
+mode (see `backend/README.md`'s "Ingestion modes" section): the worker genuinely inserts each
+click/install row as the simulated clock passes its real timestamp, not a per-day batch. The
+original `preloaded_daily` mode (bulk-upload, day-filtered reveal) is unchanged and still the
+default.
 
 ## Quick start
 
@@ -43,9 +48,9 @@ This package implements the approved FE-01–FE-10 **frontend design changes** a
 
 **Without Docker** — needs a **Python 3.10+** venv (`app.py`'s `X | None` type hints fail on 3.9, even with `from __future__ import annotations`; see `backend/README.md`). The repo's `.venv-data` is pinned to 3.9 for `cheetah_synth`, so use a separate one:
 1. One-time setup: `python3.10 -m venv .venv-backend && .venv-backend/bin/pip install -r backend/requirements.txt`
-2. `./start_backend.sh` from the repo root (`chmod +x` it first if needed). This starts both the API (`uvicorn app:app --reload --port 8000`) and the worker (`worker.py` — actually executes queued commands and advances simulations; nothing runs without it) in one terminal, and stops both cleanly on `Ctrl+C`.
+2. `./start_backend.sh` from the repo root (`chmod +x` it first if needed). This starts both the API (`uvicorn app:app --reload --port 8000`) and the worker (`worker.py` — actually executes queued commands and advances simulations; nothing runs without it) in one terminal, and stops both cleanly on `Ctrl+C`. It also **auto-pushes a fresh live demo run** once the API is reachable (a new timestamped `--dataset-id` every time, so restarts never collide) — open `http://127.0.0.1:8000/` right after and there's already something running; set `SKIP_AUTO_PUSH=1` to skip this and push manually instead (see "Test run" below).
 
-Either way, once the server's up you need data loaded before a run can start: either real data (`POST /api/v1/datasets/daily` + `/api/v1/forecasts/outlooks`, 31 October records each — see `backend/README.md`) or the synthetic test run below.
+Either way, once the server's up you need data loaded before a run can start: either real data (`POST /api/v1/datasets/daily` + `/api/v1/forecasts/outlooks`, 31 October records each — see `backend/README.md`) or the synthetic test run below (already handled automatically by `start_backend.sh` unless you set `SKIP_AUTO_PUSH=1`).
 
 ## Test run (synthetic demo data, not real data)
 
@@ -56,13 +61,21 @@ dataset calibrated against the real Oct 2026 reports in `data/`; `cheetah_synth`
 adapter that pushes a generated run straight into this backend's own ingestion endpoints.
 
 1. Start the server (see Quick start above) and confirm both the API and the worker are running.
-2. Push the synthetic dataset and start a run, from the repo root:
+2. Push the synthetic dataset and start a run, from the repo root — bulk `preloaded_daily` (below)
+   or genuinely live, per-event `live_events` (`start_backend.sh`'s auto-push already does this
+   for you; use a fresh `--dataset-id` either way, they're immutable):
    ```bash
    PYTHONPATH=src .venv-data/bin/python -m cheetah_synth.cli push-to-backend \
      --run-id full --dataset-id synth-full-v1 --start
+   # or, for true live streaming (see backend/README.md's "Ingestion modes" section):
+   PYTHONPATH=src .venv-data/bin/python -m cheetah_synth.cli push-to-backend \
+     --run-id full --dataset-id synth-full-live-v1 --ingestion-mode live_events --start
    ```
-   This ingests all 31 daily amounts, ~5,260 click/install source events, a naive placeholder
-   forecast reference per day, creates a run, and queues `start` — prints the new `run_id` when done.
+   The first ingests all 31 daily amounts plus a downsampled ~5,260 click/install source events up
+   front; the second streams every one of the ~3.7M real-shaped click/install rows in live, one
+   small batch per tick, as the simulated clock passes each event's real timestamp. Either way it
+   also pushes a naive placeholder forecast reference per day, creates a run, and queues `start` —
+   prints the new `run_id` when done.
 3. Open `http://127.0.0.1:8000/` in a browser (hard-refresh with Cmd+Shift+R if you'd loaded it
    before). The UI auto-opens the most recently created run, so this one loads automatically;
    the KPI tiles should populate and the daily chart should start advancing as the worker ticks
@@ -73,6 +86,11 @@ adapter that pushes a generated run straight into this backend's own ingestion e
    connected, so it can't do more than flag that it's blocked). Send a `resume` command (the UI's
    toolbar button, or `POST /api/v1/runs/<run_id>/commands {"command":"resume"}`) to let playback
    continue to day 31.
+5. For a `live_events` run specifically, check the **Reports** screen (all five tabs browse/filter/
+   export real streamed rows — paginated via `GET /runs/{id}/source_events`, with Performance
+   Report's `GET /runs/{id}/performance_report` rollup) and the **Marketplace** tile list/campaign
+   detail page, both of which switch from static samples to this live data automatically once a run
+   is connected.
 
 Everything pushed this way is unambiguously marked synthetic in the data itself —
 `source_kind="synthetic"` on daily amounts, `source="synthetic_naive_baseline"` /

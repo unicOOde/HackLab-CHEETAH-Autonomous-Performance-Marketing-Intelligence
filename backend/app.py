@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Header
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.exc import IntegrityError
 from models import initialize, SessionLocal, Run, Event, DailyAmount, SourceEvent, ForecastReference, ForecastValue, Command, Incident, Action, AgentTask, RunMetrics
 from core import serialize_run, emit, MONTH_DAYS, DAY_START, DAY_END, check_31_days, prior
@@ -115,6 +115,112 @@ def snapshot(run_id:str):
 
 def incident_dict(i):return {'incident_id':i.id,'run_id':i.run_id,'scope':i.scope,'metric':i.metric,'game_placement_id':i.game_placement_id,'detection_date':i.detection_date,'direction':i.direction,'actual_amount':i.actual_amount,'lower':i.lower,'upper':i.upper,'reference_forecast_id':i.forecast_reference_id,'lifecycle_status':i.lifecycle_status,'evidence_outcome':i.evidence_outcome}
 def task_dict(t):return {'task_id':t.id,'run_id':t.run_id,'incident_id':t.incident_id,'agent':t.agent,'status':t.status,'evidence_outcome':t.evidence_outcome,'fallback':t.fallback}
+
+# ---- Reports: paginated/filterable source events + CSV export + Performance Report rollup ----
+SOURCE_EVENT_CSV_COLUMNS=['id','kind','source_id','event_time_utc','event_day','game_placement_id','country','amount','commission','payout','margin','vertical','category']
+
+def _source_event_filters(stmt,dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q):
+    stmt=stmt.where(SourceEvent.dataset_id==dataset_id)
+    if kind:stmt=stmt.where(SourceEvent.kind==kind)
+    if game_placement_id:stmt=stmt.where(SourceEvent.game_placement_id==game_placement_id)
+    if country:stmt=stmt.where(SourceEvent.country==country)
+    if event_day_from:stmt=stmt.where(SourceEvent.event_day>=event_day_from)
+    if event_day_to:stmt=stmt.where(SourceEvent.event_day<=event_day_to)
+    if q:
+        like=f'%{q}%'
+        stmt=stmt.where(or_(SourceEvent.source_id.like(like),SourceEvent.game_placement_id.like(like),SourceEvent.country.like(like)))
+    return stmt
+
+def _source_event_dict(e):
+    return {'id':e.id,'kind':e.kind,'source_id':e.source_id,'event_time_utc':e.event_time_utc,'event_day':e.event_day,'game_placement_id':e.game_placement_id,'country':e.country,'amount':e.amount,'commission':e.commission,'payout':e.payout,'margin':e.margin,'vertical':e.vertical,'category':e.category}
+
+def _stream_source_events_csv(dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q):
+    buf=io.StringIO();writer=csv.writer(buf)
+    writer.writerow(SOURCE_EVENT_CSV_COLUMNS);yield buf.getvalue();buf.seek(0);buf.truncate(0)
+    if not dataset_id:return
+    with SessionLocal() as db:
+        last_id=0
+        while True:
+            stmt=_source_event_filters(select(SourceEvent),dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q).where(SourceEvent.id>last_id).order_by(SourceEvent.id.asc()).limit(5000)
+            rows=db.scalars(stmt).all()
+            if not rows:break
+            for e in rows:writer.writerow([getattr(e,c) for c in SOURCE_EVENT_CSV_COLUMNS])
+            yield buf.getvalue();buf.seek(0);buf.truncate(0)
+            last_id=rows[-1].id
+            if len(rows)<5000:break
+
+@app.get('/api/v1/runs/{run_id}/source_events')
+def list_source_events(run_id:str,kind:str|None=None,game_placement_id:str|None=None,country:str|None=None,event_day_from:str|None=None,event_day_to:str|None=None,q:str|None=None,cursor:int|None=None,limit:int=100,sort:str='desc',format:str|None=None):
+    """Paginated/filterable listing over the full source_events table for a run — unlike the
+    snapshot endpoint's capped-150-rows tail or the SSE stream's recent-batch sampling, this can
+    browse/filter/export the complete dataset (up to millions of rows). `q` matches source_id/
+    game_placement_id/country only (not every column like the old static-sample UI's client-side
+    search — free-text search across amounts/dates isn't practical server-side without a dedicated
+    index). `format=csv` streams the full filtered set (not just one page) as a CSV download."""
+    if kind is not None and kind not in ('click','install'):raise HTTPException(422,'kind must be click or install')
+    if sort not in ('asc','desc'):raise HTTPException(422,'sort must be asc or desc')
+    limit=max(1,min(limit,1000))
+    with SessionLocal() as db:
+        run=db.get(Run,run_id)
+        if not run:raise HTTPException(404,'Run not found')
+        dataset_id=run.dataset_id
+    if format=='csv':
+        return StreamingResponse(_stream_source_events_csv(dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q),media_type='text/csv',headers={'Content-Disposition':f'attachment; filename="source_events_{run_id}.csv"'})
+    with SessionLocal() as db:
+        if not dataset_id:return {'items':[],'next_cursor':None,'total_count':0}
+        base=_source_event_filters(select(SourceEvent),dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q)
+        total=db.scalar(select(func.count()).select_from(base.subquery()))
+        stmt=base
+        if cursor is not None:
+            stmt=stmt.where(SourceEvent.id<cursor) if sort=='desc' else stmt.where(SourceEvent.id>cursor)
+        order=SourceEvent.id.desc() if sort=='desc' else SourceEvent.id.asc()
+        rows=db.scalars(stmt.order_by(order).limit(limit)).all()
+        next_cursor=rows[-1].id if len(rows)==limit else None
+        return {'items':[_source_event_dict(e) for e in rows],'next_cursor':next_cursor,'total_count':total}
+
+@app.get('/api/v1/runs/{run_id}/performance_report')
+def performance_report(run_id:str):
+    """Live GROUP BY (game_placement_id, country) rollup, matching the real Performance Report's
+    grain (one row per segment that has at least one transaction — segments with clicks but no
+    conversions don't get a row, same as the real export). conversion_rate/ecpc/roas are computed
+    with the exact formulas already established in cheetah_synth/export.py's
+    populate_derived_metrics (installs/clicks, commission/clicks, amount/commission) — the real
+    export itself leaves these NaN, so these are a genuine live enhancement, not sourced data.
+    freecash_id/freecash_adspace_id/ecpm/ctr stay null: not pushed to the backend (former) or
+    flatly uncomputable without impression data that doesn't exist anywhere, real or synthetic
+    (latter)."""
+    with SessionLocal() as db:
+        run=db.get(Run,run_id)
+        if not run:raise HTTPException(404,'Run not found')
+        if not run.dataset_id:return {'rows':[],'currency':'EUR','month':'2026-10'}
+        clicks_stmt=select(SourceEvent.game_placement_id,SourceEvent.country,func.count().label('clicks')).where(SourceEvent.dataset_id==run.dataset_id,SourceEvent.kind=='click').group_by(SourceEvent.game_placement_id,SourceEvent.country)
+        clicks_map={(r.game_placement_id,r.country):r.clicks for r in db.execute(clicks_stmt)}
+        installs_stmt=select(
+            SourceEvent.game_placement_id,SourceEvent.country,
+            func.count().label('transactions'),
+            func.coalesce(func.sum(SourceEvent.amount),0.0).label('amount'),
+            func.coalesce(func.sum(SourceEvent.commission),0.0).label('commission'),
+            func.coalesce(func.sum(SourceEvent.payout),0.0).label('payout'),
+            func.coalesce(func.sum(SourceEvent.margin),0.0).label('margin'),
+            func.max(SourceEvent.vertical).label('vertical'),
+            func.max(SourceEvent.category).label('category'),
+        ).where(SourceEvent.dataset_id==run.dataset_id,SourceEvent.kind=='install').group_by(SourceEvent.game_placement_id,SourceEvent.country)
+        rows=[]
+        for r in db.execute(installs_stmt):
+            clicks=clicks_map.get((r.game_placement_id,r.country),0)
+            rows.append({
+                'freecash_id':None,'freecash_adspace_id':None,
+                'game_placement_id':r.game_placement_id,'currency':'EUR','country':r.country,
+                'transaction_type':'install','month':'2026-10',
+                'amount':r.amount,'commission':r.commission,'payout':r.payout,'margin':r.margin,
+                'transaction_count':r.transactions,'clicks':clicks,
+                'vertical':r.vertical,'category':r.category,
+                'conversion_rate':(r.transactions/clicks) if clicks else None,
+                'ecpc':(r.commission/clicks) if clicks else None,
+                'ecpm':None,'ctr':None,
+                'roas':(r.amount/r.commission) if r.commission else None,
+            })
+        return {'rows':rows,'currency':'EUR','month':'2026-10'}
 
 @app.post('/api/v1/runs/{run_id}/commands',status_code=202)
 def send_command(run_id:str,req:CommandRequest,idempotency_key:str|None=Header(default=None)):

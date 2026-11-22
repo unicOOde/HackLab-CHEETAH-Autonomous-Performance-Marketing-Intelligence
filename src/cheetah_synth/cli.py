@@ -80,7 +80,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
     funnel_df.to_parquet(run_config.raw_dir / "funnel_events.parquet", index=False)
     labels_df.to_csv(run_config.labels_dir / "anomalies.csv", index=False)
 
-    timeline = event_timeline.build_event_timeline(journeys)
+    timeline = event_timeline.build_event_timeline(journeys, calibration.placement_meta)
     timeline.to_parquet(run_config.raw_dir / "event_timeline.parquet", index=False)
 
     click_paths = export.to_click_csvs(journeys, run_config.clicks_dir)
@@ -152,8 +152,9 @@ def cmd_all(args: argparse.Namespace) -> int:
 def cmd_build_timeline(args: argparse.Namespace) -> int:
     paths = PathsConfig(data_dir=Path(args.data_dir), out_dir=Path(args.out_dir))
     run_config = RunConfig(run_id=args.run_id, paths=paths)
+    calibration = _load_or_compute_calibration(paths)
     journeys = pd.read_parquet(run_config.raw_dir / "journeys.parquet")
-    timeline = event_timeline.build_event_timeline(journeys)
+    timeline = event_timeline.build_event_timeline(journeys, calibration.placement_meta)
     out_path = run_config.raw_dir / "event_timeline.parquet"
     timeline.to_parquet(out_path, index=False)
     print(f"Wrote {len(timeline)} events ({int((timeline['kind'] == 'click').sum())} click, "

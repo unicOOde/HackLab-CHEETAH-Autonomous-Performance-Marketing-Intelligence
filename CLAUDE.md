@@ -28,10 +28,14 @@ file overlap:
   `llm.py`, `.agents/skills/`): a Neo4j entity graph built from the real data, explored and
   extended by Claude-powered agents. See its own section below.
 
-`PRD/Master_PDR_v2.0.pdf` and `CHEETAH_Product_and_Integration_Spec_v1.5.docx` are the design
-authority for Track A's requirements/acceptance criteria. `PRD/architecture_diagrams/`
-(`.dot`/`.svg`/`.png`, indexed in that folder's `README.txt`) are **target**-architecture
-diagrams for Track A — useful for understanding where it's headed, not a claim it's all built yet.
+`PRD/Master_PDR_v2.0.pdf`/`.docx` is the design authority for Track A's requirements/acceptance
+criteria (supersedes the older `CHEETAH_Product_and_Integration_Spec_v1.5.docx`, which no longer
+exists in the repo). `PRD/PRD_findings_extension.md` is a supplementary, dated decision log for
+things settled *after* the master PDR (synthetic-vs-real data scope, Track B staying on real data,
+Reports-screen scope cuts) — read alongside it, doesn't modify or supersede it.
+`PRD/architecture_diagrams/` (`.dot`/`.svg`/`.png`, indexed in that folder's `README.txt`) are
+**target**-architecture diagrams for Track A — useful for understanding where it's headed, not a
+claim it's all built yet.
 
 ## Real data
 
@@ -105,7 +109,30 @@ logo image not yet referenced by the HTML itself.
   result, since Claude/Neo4j/evidence adapters aren't connected. `RunMetrics` (one row per run,
   incrementally updated on every live insert) and `RunCampaignSeen` back the dashboard's six KPI
   tiles (Amount/Commission/Payout/Margin/Transactions/Campaigns) so they read live, including the
-  in-progress day, rather than only updating once per day-close.
+  in-progress day, rather than only updating once per day-close. `SourceEvent` also carries
+  `vertical`/`category` (placement-level attributes, looked up via `calibration.placement_meta` —
+  knowable for any click regardless of conversion, not just converting rows).
+- **Live-queryable endpoints beyond the snapshot/SSE path**: `GET /runs/{id}/source_events`
+  (filterable by kind/campaign/country/date-range/text search, keyset-paginated on the row PK,
+  `&format=csv` streams the *full* filtered set) and `GET /runs/{id}/performance_report` (a live
+  `GROUP BY (game_placement_id, country)` rollup — `conversion_rate`/`ecpc`/`roas` are computed
+  live from click/install counts using the same formulas as `cheetah_synth/export.py`'s
+  `populate_derived_metrics`; note the *real* Performance Report leaves these NaN, so these are a
+  genuine enhancement, not sourced parity — `ecpm`/`ctr`/`freecash_id`/`freecash_adspace_id` stay
+  `null`, genuinely unavailable). These back the frontend's live Reports screen (all 5 tabs) and
+  the live half of Marketplace (tile list + Commission/EPC/Country Revenue/per-country breakdown
+  on the campaign detail page) — the Marketplace forecast-status pill and the whole Baseline &
+  investigation panel stay hardcoded by design (MVP 2 / Investigator scope, not a gap).
+- **`models.py` self-heals a stale local dev SQLite DB**: there's no migration tooling in this
+  repo, so a schema change (new column/table) would otherwise crash an existing `cheetah_dev.db`
+  with `no such column`. `_recreate_if_schema_stale()` (gated to SQLite only, never Postgres)
+  detects the mismatch on startup and deletes+rebuilds the file fresh — safe since that file is
+  explicitly disposable dev state.
+- **`core._live_timelines`** (the in-memory per-run cache of a `live_events` run's loaded event
+  timeline) is a capacity-bounded `OrderedDict` (`LIVE_TIMELINE_CACHE_CAPACITY`), evicted both on
+  a run reaching a terminal state (`completed`/`stopped`) and via plain LRU — eviction of a still-
+  running run is safe because the same COUNT-based recovery used for worker-restart also rebuilds
+  an evicted run's cursor transparently on its next tick.
 - **Non-fabrication is a load-bearing design rule, not an implementation gap**: when an
   integration (TabPFN, Claude, Neo4j, sandbox fix actions, replay) isn't configured, the system
   must surface an explicit blocked/unavailable state (`AgentTask.status='blocked_configuration'`,
@@ -166,20 +193,29 @@ confirmed even with `from __future__ import annotations`). `cheetah_synth`'s own
 `.venv-data`. `worker.py` is what actually executes queued commands and advances simulations —
 nothing happens without it running alongside the API.
 
-Once the backend is running, push the synthetic demo dataset into it — bulk `preloaded_daily`
-(today's default) or genuinely live `live_events` (see Backend bullets above):
+**`start_backend.sh` also auto-pushes a demo dataset once the API is reachable**: it generates a
+fresh timestamped `--dataset-id` (so repeated restarts never collide with a prior run — dataset
+IDs are immutable), pushes the `full` synthetic run in `live_events` mode, and sends `start` — so
+there's always a running demo immediately after the script comes up, no manual push needed. Set
+`SKIP_AUTO_PUSH=1` before running it to skip this and push manually instead. This requires
+`data/synthetic/full/raw/event_timeline.parquet` to already exist (see the generator commands
+below) and `.venv-data` to exist alongside `.venv-backend`.
+
+To push manually instead — bulk `preloaded_daily` or genuinely live `live_events` (see Backend
+bullets above); always use a dataset_id you haven't used before, since both the daily-amount rows
+and the naive forecast-reference IDs are dataset-scoped and immutable:
 ```bash
 PYTHONPATH=src python -m cheetah_synth.cli push-to-backend --run-id full --dataset-id synth-full-v1 --start
 PYTHONPATH=src python -m cheetah_synth.cli push-to-backend --run-id full --dataset-id synth-full-v2 --ingestion-mode live_events --start
 ```
 `event_timeline.parquet` is generated automatically by `cheetah-synth generate`; for an
-already-generated run directory that predates it, build it separately with
-`PYTHONPATH=src python -m cheetah_synth.cli build-timeline --run-id full`.
+already-generated run directory that predates it (or predates the `vertical`/`category` columns),
+rebuild it with `PYTHONPATH=src python -m cheetah_synth.cli build-timeline --run-id full`.
 
-Backend tests: `pytest tests/test_backend.py tests/test_backend_live.py` (needs
-`backend/requirements.txt` installed — now includes `pandas`/`pyarrow`, required for the
+Backend tests: `pytest tests/test_backend.py tests/test_backend_live.py tests/test_backend_reports.py`
+(needs `backend/requirements.txt` installed — now includes `pandas`/`pyarrow`, required for the
 `live_events` scheduler — not part of the top-level `pyproject.toml` deps, since the backend and
-`cheetah_synth` have independent dependency sets). Run the two suites with their separate scoped
+`cheetah_synth` have independent dependency sets). Run the suites with their separate scoped
 paths, not a bare `pytest tests/` — that aborts the *entire* run at collection time if
 `backend/requirements.txt` isn't installed (missing `fastapi` fails collecting `test_backend.py`,
 which is a hard error, not a per-file skip).

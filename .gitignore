@@ -1,6 +1,12 @@
 # Source Data
 data/
 
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
 # Personal, not shared with the team
 CLAUDE.local.md
 

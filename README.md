@@ -1,2 +1,92 @@
 # HackLab-CHEETAH-Autonomous-Performance-Marketing-Intelligence
 CHEETAH is a fully agentic performance marketing intelligence system that autonomously forecasts revenue, detects anomalies, investigates performance deviations, and delivers actionable insights through coordinated AI agents.
+
+# CHEETAH v1.5 — Integration Foundation
+
+This package implements the approved FE-01–FE-10 **frontend design changes** and a runnable **backend simulation/event foundation**, while preserving all six original routes and the v1.4 original files outside this package.
+
+## Included
+
+- `frontend/CHEETAH_UI_Prototype_v1.5.html`: standalone enhanced UI with October aggregate-first UX, simulation controls, Evidence Reviewer panel, governed-action panel, two replay options, neutral campaign indicators, graph lifecycle legend and SSE/API integration. Original source samples remain explicitly marked as samples when offline.
+- `CHEETAH_Product_and_Integration_Spec_v1.5.docx`: approved requirements, architecture, service contracts, acceptance cases and implementation limits.
+- `backend/app.py`, `models.py`, `core.py`, `worker.py`: FastAPI endpoints, SQLAlchemy models, durable command queue, October source/daily forecast ingestion, daily revenue evaluation, automatic pause, incident records, source-event batches and SSE.
+- `docker-compose.yml`, `Dockerfile`, `.env.example`: local infrastructure for PostgreSQL, API, one worker and Neo4j (Neo4j model itself pending).
+- `tests/test_backend.py`: smoke tests using isolated test-only values, not data included with the product.
+
+## What works now
+
+1. All six HTML screens render with no observed JS exceptions in Chromium smoke tests.
+2. Persistent run creation, status snapshots, commands, run-specific SSE with event IDs.
+3. Import and validate exactly 31 October daily Amount values under an immutable dataset ID.
+4. Import clicks and installs as independent IDs and stream their per-day batches from the worker.
+5. Import seven-day externally produced forecast outlooks and lock D+1 references (no rewriting).
+6. Compare each finalized aggregate daily Amount to its locked interval; pause on a deviation and emit an aggregate incident.
+7. Show an explicit blocked agent task if investigation credentials/model are absent; no fabricated root-cause/evidence outcomes.
+8. UI displays unavailable/neutral statuses until the necessary integrations are configured.
+
+## Not yet operational — dependencies expressly deferred by the product owner
+
+- Actual October 2026 time-series and full click/install records; test data in `tests/` is isolated and never loaded into the UI. A **synthetic** (not real) stand-in dataset is available for demo/dev purposes only — see "Synthetic demo data" below.
+- TabPFN-TS direct inference and interval calibration, because API credentials and historical context were not supplied.
+- Claude Investigator and Evidence Reviewer inference, bounded ReAct and evidence reference tests.
+- Neo4j/MCP model, graph proposal approval and learning commit.
+- Sandbox action effects, guardrails, rollback, causal intervention mechanics.
+- Checkpoint-backed Learning Replay and Fix Validation Replay. The API currently **rejects replay requests** until these adapters exist; frontend buttons accurately surface that state.
+- True intra-day source-event staggering; the initial worker publishes per-day source-event batches during accelerated playback.
+- Production authentication, concurrency hardening and deployment security.
+
+## Quick start
+
+**With Docker:**
+1. Copy `.env.example` to `.env`; set unique local passwords.
+2. `docker compose up --build` from this directory. API/UI at `http://127.0.0.1:8000/`. Neo4j management interface at `localhost:7474` (present for future graph integration, not yet queried by the API).
+
+**Without Docker** — needs a **Python 3.10+** venv (`app.py`'s `X | None` type hints fail on 3.9, even with `from __future__ import annotations`; see `backend/README.md`). The repo's own `.venv` is pinned to 3.9 for `cheetah_synth`, so use a separate one:
+1. One-time setup: `python3.10 -m venv .venv-backend && .venv-backend/bin/pip install -r backend/requirements.txt`
+2. `./start_backend.sh` from the repo root (`chmod +x` it first if needed). This starts both the API (`uvicorn app:app --reload --port 8000`) and the worker (`worker.py` — actually executes queued commands and advances simulations; nothing runs without it) in one terminal, and stops both cleanly on `Ctrl+C`.
+
+Either way, once the server's up you need data loaded before a run can start: either real data (`POST /api/v1/datasets/daily` + `/api/v1/forecasts/outlooks`, 31 October records each — see `backend/README.md`) or the synthetic test run below.
+
+## Test run (synthetic demo data, not real data)
+
+A ready-made way to exercise the full pipeline (ingest → daily playback → deviation detection →
+pause/incident → blocked Investigator task) without real data. `data/synthetic/` (generated by
+`src/cheetah_synth/`, see `data/synthetic/README.md`) holds a synthetic click→conversion journey
+dataset calibrated against the real Oct 2026 reports in `data/`; `cheetah_synth` also includes an
+adapter that pushes a generated run straight into this backend's own ingestion endpoints.
+
+1. Start the server (see Quick start above) and confirm both the API and the worker are running.
+2. Push the synthetic dataset and start a run, from the repo root:
+   ```bash
+   PYTHONPATH=src .venv/bin/python -m cheetah_synth.cli push-to-backend \
+     --run-id full --dataset-id synth-full-v1 --start
+   ```
+   This ingests all 31 daily amounts, ~5,260 click/install source events, a naive placeholder
+   forecast reference per day, creates a run, and queues `start` — prints the new `run_id` when done.
+3. Open `http://127.0.0.1:8000/` in a browser (hard-refresh with Cmd+Shift+R if you'd loaded it
+   before). The UI auto-opens the most recently created run, so this one loads automatically;
+   the KPI tiles should populate and the daily chart should start advancing as the worker ticks
+   through October.
+4. Expect a pause around **Oct 7** — that's where the naive reference band (tuned to flag
+   roughly one day across the month, not tied to any specific injected anomaly) detects a
+   deviation, creating an Incident and a `blocked_configuration` Investigator task (Claude isn't
+   connected, so it can't do more than flag that it's blocked). Send a `resume` command (the UI's
+   toolbar button, or `POST /api/v1/runs/<run_id>/commands {"command":"resume"}`) to let playback
+   continue to day 31.
+
+Everything pushed this way is unambiguously marked synthetic in the data itself —
+`source_kind="synthetic"` on daily amounts, `source="synthetic_naive_baseline"` /
+`model_version="naive_trailing_mean_v0"` on the forecast references (a deliberately naive
+trailing-mean placeholder, **not** a TabPFN forecast — TabPFN isn't connected, per "Not yet
+operational" above) — so nothing from this path could be mistaken for real revenue or a real
+model output. Re-running `push-to-backend` with the same `--dataset-id` fails with `409` (dataset
+IDs are immutable) — pass a new `--dataset-id` for a fresh ingest, or just `POST /api/v1/runs
+{"dataset_id":"synth-full-v1"}` directly to start another run against the already-loaded data.
+
+## Data and metric protection
+
+`Amount` is customer net revenue excluding tax, not spend or profit. Source summary aggregates and transaction detail must not be double counted. Preserve Click ID, Transaction ID, Freecash ID, Freecash AdSpace ID and Game Placement ID as strings. Campaign-level forecasting remains explicitly MVP 2.
+
+## Change control
+
+Original `/mnt/data/CHEETAH_UI_Prototype_v1.4(1).html` and `/mnt/data/CHEETAH_Frontend_PDR_v1.4_Data_Naming(1).docx` were left untouched. The v1.5 DOCX is a superseding **integration specification**, not a silent edit of the v1.4 33-page reference PDR. The original PDR remains the design authority for unchanged views and field definitions.

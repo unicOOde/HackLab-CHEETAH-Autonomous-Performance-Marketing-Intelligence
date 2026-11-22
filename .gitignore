@@ -1,0 +1,86 @@
+# Source Data
+data/
+
+# Personal, not shared with the team
+CLAUDE.local.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.venv-backend/
+venv/
+dist/
+build/
+.coverage
+htmlcov/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials.json
+
+# AI models and experiment artifacts
+models/
+checkpoints/
+*.pkl
+*.pickle
+*.joblib
+*.pt
+*.pth
+*.onnx
+mlruns/
+wandb/
+
+# Local data and generated forecasts
+data/raw/
+data/processed/
+data/synthetic/
+outputs/
+artifacts/
+forecasts/
+reports/generated/
+
+# Local databases and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs/
+
+# Frontend (React / Node.js)
+node_modules/
+.next/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# IDE and operating system
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

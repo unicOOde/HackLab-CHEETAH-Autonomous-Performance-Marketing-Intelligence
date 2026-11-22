@@ -122,7 +122,7 @@ def test_investigator_replies_to_requester(tmp_path, monkeypatch):
         def __init__(self, run_overlooker=False):
             self.store = types.SimpleNamespace(close=lambda: None, get=lambda label, hid: {'text': 'x', 'confidence': 0.5})
 
-        def investigate(self, label, node_id):
+        def investigate(self, label, node_id, on_step=None):
             return types.SimpleNamespace(hypotheses=['H1'], updates=[], dropped=[])
 
     monkeypatch.setattr(builtin, '_prepare_imports', lambda: None)
@@ -136,3 +136,63 @@ def test_investigator_replies_to_requester(tmp_path, monkeypatch):
     assert len(replies) == 1 and replies[0].payload['incident_id'] == 'INC-1'
     assert replies[0].payload['target'] == ['Ad', 'A1']
     assert sum(m.to == 'product_manager' for m in ctx._posts) == 2
+
+
+def _steps(run_id):
+    import json
+    with SessionLocal() as db:
+        return [json.loads(e.payload) for e in db.query(Event).filter(Event.run_id == run_id,
+                                                                      Event.event_type == dispatcher.STEP_EVENT)
+                .order_by(Event.event_id)]
+
+
+def test_steps_trace_routing_and_conclusion(tmp_path, monkeypatch):
+    monkeypatch.setattr(dispatcher, '_investigator_unavailable', lambda: None)
+    ds, run_id, iid = _seed()
+    dispatcher.run_dispatcher(_ctx(tmp_path, {'incident_id': iid, 'run_id': run_id, 'dataset_id': ds, 'date': DAY}))
+    report = Message(sender='investigator', to='dispatcher', type='report',
+                     payload={'incident_id': iid, 'target': ['Ad', 'AD_DROP'],
+                              'hypotheses': [{'id': 'H1', 'text': 'postback lag', 'confidence': 0.4}]})
+    dispatcher.run_dispatcher(_ctx(tmp_path, messages=[report]))
+    steps = _steps(run_id)
+    assert [(s['agent'], s['kind']) for s in steps] == [('dispatcher', 'routed'), ('investigator', 'concluded')]
+    assert steps[0]['focus'] == ['Ad', 'AD_DROP'] and steps[0]['driver']['share'] == 1.0
+    assert steps[1]['outcome'] == 'hypotheses_proposed' and steps[1]['focus'] == ['Ad', 'AD_DROP']
+
+
+def test_blocked_investigator_shows_as_a_step(tmp_path, monkeypatch):
+    monkeypatch.setattr(dispatcher, '_investigator_unavailable', lambda: 'ANTHROPIC_API_KEY not set')
+    ds, run_id, iid = _seed()
+    dispatcher.run_dispatcher(_ctx(tmp_path, {'incident_id': iid, 'run_id': run_id, 'dataset_id': ds, 'date': DAY}))
+    assert [s['kind'] for s in _steps(run_id)] == ['routed', 'blocked']
+    assert 'ANTHROPIC_API_KEY' in _steps(run_id)[1]['text']
+
+
+def test_investigator_progress_reaches_the_incident(tmp_path, monkeypatch):
+    ds, run_id, iid = _seed()
+
+    class FakeInv:
+        def __init__(self, run_overlooker=False):
+            self.store = types.SimpleNamespace(close=lambda: None, get=lambda label, hid: {'text': 'x', 'confidence': 0.5})
+
+        def investigate(self, label, node_id, on_step=None):
+            on_step('context', {'context': {'target': {'category': 'Games'},
+                                            'mix': {'Country': [{'id': 'DE'}, {'id': 'US'}]}}})
+            on_step('reasoning', {})
+            on_step('hypothesis', {'id': 'H1', 'text': 'DE postback outage', 'confidence': 0.6,
+                                   'evidence': ['DE tx 12'], 'about': [('Ad', node_id), ('Country', 'DE')]})
+            on_step('dropped', {'reason': 'evidence not grounded in context numbers', 'text': 'guess'})
+            return types.SimpleNamespace(hypotheses=['H1'], updates=[], dropped=['x'])
+
+    monkeypatch.setattr(builtin, '_prepare_imports', lambda: None)
+    monkeypatch.setitem(sys.modules, 'agents.investigator_agent', types.SimpleNamespace(InvestigatorAgent=FakeInv))
+    req = Message(sender='dispatcher', to='investigator', type='investigate',
+                  payload={'targets': [['Ad', 'AD_DROP']], 'reply_to': 'dispatcher', 'incident_id': iid, 'run_id': run_id})
+    builtin.run_investigator(RunContext(AgentBus(tmp_path / 'bus').ensure(), 'investigator', 'r', {}, [req]))
+    steps = _steps(run_id)
+    assert [s['kind'] for s in steps] == ['context', 'reasoning', 'hypothesis', 'dropped']
+    assert all(s['focus'] == ['Ad', 'AD_DROP'] for s in steps)
+    assert steps[0]['nodes'] == [['Category', 'Games', 'IN_CATEGORY'], ['Country', 'DE', 'CONVERTS_IN'],
+                                 ['Country', 'US', 'CONVERTS_IN']]
+    assert steps[2]['hypothesis']['confidence'] == 0.6 and steps[2]['nodes'] == [['Country', 'DE', 'ABOUT']]
+    assert 'not grounded' in steps[3]['dropped']['reason']

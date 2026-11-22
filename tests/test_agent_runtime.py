@@ -362,7 +362,7 @@ def test_clock_to_pacing_to_investigator_pipeline(bus, monkeypatch):
             assert run_overlooker is False      # the graph engineer owns the overlooker now
             self.store = Store()
 
-        def investigate(self, label, node_id):
+        def investigate(self, label, node_id, on_step=None):
             if label == "Country":
                 raise ValueError("no context")
             return inv_mod.Investigation(target=(label, node_id), hypotheses=["hyp_1"])

@@ -4,20 +4,68 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-CHEETAH is a fully agentic performance marketing intelligence system that autonomously forecasts
-revenue, detects anomalies, investigates performance deviations, and delivers actionable insights
-through coordinated AI agents. The current code is the **v1.5 integration foundation**: a runnable
-backend/frontend skeleton with the simulation, event, and persistence plumbing in place, but with
-every AI/graph/forecasting integration deliberately stubbed out pending credentials and real data
-(see "Deliberately not implemented" below) — this is the system's own stated design, not a gap to
-quietly fill in.
+CHEETAH is a hackathon submission: a fully agentic performance marketing intelligence system that
+autonomously forecasts revenue, detects anomalies, investigates performance deviations, and
+delivers actionable insights through coordinated AI agents. The full brief is in `DESCRIPTION.md`
+— read it before any design decision. In short: build a fully agentic monitoring system for a
+marketplace. It keeps a graph of how the business works, decides what to watch, detects
+meaningful changes, investigates them on its own, and reports with evidence. Nobody has to ask it
+questions.
+
+Judging: 40% metric graph + automatic extension, 40% autonomous monitoring & investigation, 20%
+working demo (inject a fault + an innocent change, add a new metric, the system reacts alone).
+
+Language: English everywhere (code, comments, CLAUDE.md, agent reports).
+
+**Two parallel implementation tracks currently coexist in this repo** for the same submission —
+they have not been architecturally reconciled yet, and touch different directories so there's no
+file overlap:
+- **Track A — backend/frontend integration foundation** (`backend/`, `frontend/`,
+  `src/cheetah_synth/`, root-level `docker-compose.yml`/`Dockerfile`): a FastAPI + SQLAlchemy
+  simulation/event backend with a standalone HTML UI, plus a synthetic-data generator. See its own
+  section below.
+- **Track B — Neo4j graph + Claude agents** (`agents/`, `freecash_graph.py`, `graph_store.py`,
+  `llm.py`, `.agents/skills/`): a Neo4j entity graph built from the real data, explored and
+  extended by Claude-powered agents. See its own section below.
 
 `PRD/Master_PDR_v2.0.pdf` and `CHEETAH_Product_and_Integration_Spec_v1.5.docx` are the design
-authority for requirements/acceptance criteria. `PRD/architecture_diagrams/` (`.dot`/`.svg`/`.png`,
-indexed in that folder's `README.txt`) are the **target**-architecture diagrams embedded in the
-PDR — useful for understanding where this is headed, but not a claim that it's all built yet.
+authority for Track A's requirements/acceptance criteria. `PRD/architecture_diagrams/`
+(`.dot`/`.svg`/`.png`, indexed in that folder's `README.txt`) are **target**-architecture
+diagrams for Track A — useful for understanding where it's headed, not a claim it's all built yet.
 
-## Architecture
+## Real data
+
+Real affiliate data from Freecash, October 2026, in `data/` (read-only inputs):
+- `data/Clicks/*.csv` — 31 daily click logs. Columns: `row, Click ID, Time, Freecash ID, Freecash
+  AdSpace ID, Game Placement ID, Country`. `Time` is ISO8601 but mixed sub-formats — parse with
+  `pd.to_datetime(..., format="ISO8601")`.
+- `data/OCT26_Transaction Report.xlsx` — ~3k real conversions (sheet `Sheet`). Columns:
+  Transaction ID, Click Time, Time (conversion), Click to Conversion Duration (s), Freecash
+  AdSpace ID, Game Placement ID, Transaction Type (install/sale/lead), Country, Amount,
+  Commission, Payout, Margin.
+- `data/OCT26_Performance-Report.xlsx` — one row per (AdSpace, Game Placement ID, Country),
+  monthly rollup, with Vertical/Category/Currency labels.
+- If working from a CSV re-export of the xlsx files (Track B's `freecash_graph.py` convention),
+  note money values there use thousands separators (`"1,101.98"`) and need separator-aware parsing.
+
+Shared facts: join keys are `Freecash ID`/`Freecash AdSpace ID`/`Game Placement ID`/`Country`;
+overall real conversion rate ~0.083%. One month of data only — baselines must work without a prior
+month (e.g. a trailing 7-day weekday-adjusted median). Recent days are incomplete because
+conversions lag their clicks by up to (and sometimes more than) 7 days.
+
+### Synthetic data (`data/synthetic/`)
+
+A generated, calibrated-against-the-real-data journey dataset (clicks → invented funnel →
+conversion), produced by Track A's `cheetah_synth` package. Gitignored, fully regenerable, not
+source of truth. See `data/synthetic/README.md` for the generation process, current result, and
+open next steps.
+
+## Track A: backend/frontend integration foundation
+
+The current code is the **v1.5 integration foundation**: a runnable backend/frontend skeleton
+with simulation, event, and persistence plumbing in place, but with every AI/graph/forecasting
+integration deliberately stubbed out pending credentials and real data (see "Deliberately not
+implemented" below) — this is the system's own stated design, not a gap to quietly fill in.
 
 **Frontend**: `frontend/CHEETAH_UI_Prototype_v1.5.html` is a single standalone HTML file (six
 screens, simulation controls, Evidence Reviewer panel, governed-action panel, SSE/API integration)
@@ -67,11 +115,11 @@ logo image not yet referenced by the HTML itself.
   click/install source data (only isolated test fixtures exist, never loaded into the UI),
   production auth/concurrency hardening.
 
-**Synthetic data generator** (`src/cheetah_synth/`): generates a calibrated synthetic click→
-conversion journey dataset from the real `data/` files, for pipeline testing, anomaly-detection
+**Synthetic data generator** (`src/cheetah_synth/`): generates the calibrated synthetic
+click→conversion journey dataset described above, for pipeline testing, anomaly-detection
 testing, and a TabPFN-ready forecasting table — a different thing from the backend's own
-`DailyAmount`/`SourceEvent` ingestion. See `data/synthetic/README.md` for the process/result/next
-steps, and the package's module docstrings for implementation detail.
+`DailyAmount`/`SourceEvent` ingestion. See `data/synthetic/README.md` and the package's module
+docstrings for implementation detail.
 
 `cheetah_synth.backend_adapter` bridges the two: it pushes a generated run into the backend's own
 `/datasets/daily`, `/datasets/events`, `/forecasts/references` endpoints (then creates a `Run`)
@@ -82,7 +130,7 @@ volatility to flag roughly one deviation across the month — not a forecasting 
 tuned to coincide with any particular injected anomaly. Everything it writes is clearly tagged
 synthetic (`source_kind="synthetic"`) so it can never be mistaken for real revenue.
 
-## Commands
+### Track A commands
 
 Backend (from repo root):
 ```bash
@@ -119,10 +167,126 @@ PYTHONPATH=src python -m pytest tests/cheetah_synth/
 itself can't run in the Claude Code sandbox used so far — its bundled `cacert.pem` is blocked by
 the filesystem policy. Run via `PYTHONPATH=src` until that's fixed.)
 
+## Track B: Neo4j graph + Claude agents
+
+The Neo4j graph is **the** graph. `graph_build_proposal.md` (a metric graph with
+formula/causal/signature edges) and `../hacklab/graphwalk` are **reference only**: borrow ideas,
+don't port the architecture.
+
+Built by `freecash_graph.py` → `freecash_graph.cypher` (idempotent `UNWIND … MERGE`):
+
+```
+(Freecash)-[:RUNS {tx, amount, commission, payout, margin}]->(Ad)
+(Ad)-[:CONVERTS_IN]->(Country)          all five carry the same totals
+(Ad)-[:CLICKED_AT]->(ClickHour 0-23)    {tx, amount, commission, payout, margin}
+(Ad)-[:CONVERTS_AFTER]->(LagBucket '<1m','<1h','<1d','<7d','>7d')
+(Ad)-[:HAS_TYPE]->(TransactionType sale|lead)
+(Ad)-[:ACTIVE_IN]->(Month)
+(Ad)-[:IN_VERTICAL]->(Vertical)  (Ad)-[:IN_CATEGORY]->(Category)  (Ad)-[:PAID_IN]->(Currency)
+```
+
+Principles:
+- **No node per transaction or click.** Rows are summed into edges, so graph size depends on
+  #ads × #buckets, not on #rows. Keep it that way for every extension.
+- The build is the only writer of base nodes and aggregate-edge totals. Re-running it must not
+  wipe agent data (it only MERGEs nodes and SETs totals).
+
+### Planned extensions (agreed, not built yet)
+- **Time axis:** `(:Day)` nodes plus per-day aggregate edges (e.g. `Ad-[:ON_DAY {tx, commission, …}]->Day`,
+  and Ad × Country × Day where monitoring needs it). Monitoring reads time series straight from
+  Neo4j. Bucket outcomes by conversion `Time` and cohort metrics (lag, instant share) by `Click Time`.
+- **Metric nodes:** `(:Metric {name, definition, cypher|formula, unit})` with edges between metrics
+  (e.g. `FORMULA` for exact arithmetic decompositions like `commission = gmv * comm_rate`, and
+  `INFLUENCES` for possible causes with a weight and a status `hypothesis|validated|rejected`).
+  Metrics are defined as ratios of sums over edge totals so they can be sliced by every dimension.
+  Today they live as Cypher inside `agents/investigator_agent.py` (`AD_METRICS_Q`) and should move
+  into Metric nodes.
+- **Metric onboarding agent:** a contributor submits a name, a definition and a query/formula. The
+  agent validates it (it must evaluate, and a formula's residual must be ≈ 0 globally and per
+  segment), finds its connections (formula parsing, correlation on daily series, LLM semantics),
+  and writes it as a Metric node. The contributor never specifies its place in the graph.
+- New base labels/relationships must be added to `BASE_LABELS` / `AGGREGATE_RELS` /
+  `AGENT_LABELS` in `graph_store.py` **and** to the graph model description in the overlooker's `SYSTEM` prompt.
+
+### Write rules (enforced by `graph_store.py`)
+
+Agents **never write Cypher**. All writes go through `GraphStore`:
+- Base nodes: only `ag_*` properties.
+- Aggregate edges: totals are read-only. Agents may set `ag_*` (e.g. `ag_weight`). "Removing" one
+  sets `ag_disabled = true`.
+- Agent edges (any other UPPER_SNAKE_CASE type, weight in [-1, 1]) and agent nodes (`Outage`,
+  `Hypothesis`, status `open|resolved|confirmed|rejected`) are free to create, change and delete.
+- Every write creates a `(:Change)` audit node and can be reverted with `undo(change_id)`. Never
+  modify `Change` nodes.
+- `GraphStore.read()` rejects any non-read-only Cypher. Return scalars/maps (`properties(n)`), not node objects.
+
+### Agents (`agents/`)
+
+`run_agents.py` runs one pass: outage → investigator → graph overlooker. The overlooker runs once
+at the end over all collected change ids. Run standalone, each agent starts the overlooker itself.
+
+- `outage_agent.py`: web research (Claude + web search) checks whether services the ads depend on
+  are down now. It writes `(Outage)-[:AFFECTS]->(Country)` and `ag_risk*` flags on Ads, and
+  resolves outages that are no longer reported.
+- `investigator_agent.py`: gathers context for an Ad/Country/Category/Outage, computes deviations
+  against peers (same category, all ads), and asks Claude for hypotheses. Every evidence line must
+  quote a number that is actually in the context, otherwise it is dropped. It writes
+  `(Hypothesis)-[:ABOUT]->(…)`.
+- `graph_overlooker.py`: explores the graph with read-only Cypher and proposes edge/property/status
+  changes. Each one needs reasoning + evidence queries, and an **independent reviewer call** sees
+  the re-run evidence and must approve it.
+
+Still missing for the full loop (see DESCRIPTION.md): a continuous monitor (what to watch,
+baselines, seasonality, completeness, planned events), dedup of repeated alerts
+(persisting vs. resolved issues), metric onboarding, and the demo scenarios with fault injection.
+
+### Agent conventions
+- LLM calls go through `llm.py` (`claude_json`: one call → one JSON object matching a schema, with
+  optional web search). The default model is `claude-opus-5-5` (override with `CLAUDE_MODEL`).
+- **Unknown never acts.** `LLMUnavailable`, missing keys, unparsable answers and failed searches
+  all become status `unknown`. They are recorded as an uncertainty and never trigger a flag or action.
+- Numbers come from the graph, not from the model. Validate LLM output (node existence, confidence
+  in [0,1], `ag_*` keys, quoted numbers) before writing.
+- Small samples (few tx) → low confidence, and say so. Separate a supported cause from a hypothesis,
+  and downstream symptoms from first causes.
+- Reports must contain: what changed (numbers + baseline), the investigation trail, the business
+  impact (commission/margin at risk), what remains uncertain, and **ranked recommended actions**
+  per country / ad (campaign) / category with expected impact. Actions are recommendations only,
+  never executed. Ideas for the action catalogue are in `FIXES.md` (pause on outage, reduce
+  bid/cap, more ads where payout is low, landing/button changes when conversion lag rises, price
+  changes, revert the last release). Not every cause has a fix (bad internet, payment not accepted, app crash).
+
+### Legacy (don't extend)
+
+`service_down_agent.py` (networkx + Gemini) and `metrics_monitor_agent.py` are the old stack.
+Don't add features there. Exception: `agents/outage_agent.py` still imports the research logic
+(prompt, parsing, country/region normalisation) from `service_down_agent.ExternalOutageCampaignAgent`.
+Move that into `agents/` before deleting the file.
+
+### Track B setup & commands
+
+- Neo4j runs on **Aura**: set `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` (optionally
+  `NEO4J_DATABASE`) in `.env` (template: `.env.example`, never commit `.env`). Without them,
+  `graph_store.py` falls back to `neo4j-cli` with credential `test`.
+- `ANTHROPIC_API_KEY` in `.env` for the agents.
+- Python venv: `.venv/` (anthropic, neo4j, networkx) — note this is a **different** `.venv` usage
+  than Track A's `.venv` (numpy/pandas/openpyxl/pyarrow for `cheetah_synth`); check which track
+  you're working in before assuming what's installed.
+
+```bash
+.venv/bin/python freecash_graph.py > freecash_graph.cypher   # rebuild graph from CSVs (prints check to stderr)
+neo4j-cli query --rw --credential <aura-cred> < freecash_graph.cypher   # load (statements split on ';')
+.venv/bin/python run_agents.py                               # one full agent pass
+.venv/bin/python run_agents.py --target Ad:0003WS            # also investigate specific nodes
+.venv/bin/python run_agents.py --skip-outage --target "Category:Fashion & Apparel"
+```
+
+Neo4j skills (Cypher, modeling, GDS, Aura, drivers) live in `.agents/skills/`. Use them for
+Cypher syntax and modeling questions.
+
 ## Available data sources
 
-- `data/Clicks/*.csv` (31 real Oct 2026 daily click logs), `data/OCT26_Transaction Report.xlsx`,
-  `data/OCT26_Performance-Report.xlsx` — real data, join keys `Freecash ID`/`Freecash AdSpace ID`/
-  `Game Placement ID`/`Country`. Overall real conversion rate ~0.083%.
-- `data/synthetic/` — generated, calibrated synthetic journey data (see above). Gitignored, fully
+- `data/Clicks/*.csv`, `data/OCT26_Transaction Report.xlsx`, `data/OCT26_Performance-Report.xlsx`
+  — real Oct 2026 data (see "Real data" above).
+- `data/synthetic/` — Track A's generated, calibrated synthetic journey data. Gitignored, fully
   regenerable, not source of truth.

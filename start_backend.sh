@@ -52,11 +52,23 @@ if [ "${SKIP_AUTO_PUSH:-0}" != "1" ]; then
       curl -sf http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1 && break
       sleep 1
     done
+    # The API and worker load the repo-root .env themselves (backend/env.py). Default the demo run to
+    # TabPFN when the backend reports its forecast service configured (token loaded + package
+    # installed), otherwise to the naive placeholder band. FORECAST_PROVIDER=naive|tabpfn overrides.
+    if [ -z "${FORECAST_PROVIDER:-}" ]; then
+      if curl -sf http://127.0.0.1:8000/api/v1/health | grep -q '"forecast_provider":"configured"'; then
+        FORECAST_PROVIDER=tabpfn
+      else
+        FORECAST_PROVIDER=naive
+        echo "TabPFN forecast service not configured (TABPFN_TOKEN in .env + backend/requirements-forecast.txt) — using naive references." >&2
+      fi
+    fi
     DATASET_ID="synth-full-live-$(date +%Y%m%d%H%M%S)"
-    echo "Auto-pushing dataset_id=$DATASET_ID (live_events, full run) and starting playback..."
+    echo "Auto-pushing dataset_id=$DATASET_ID (live_events, full run, forecast=$FORECAST_PROVIDER) and starting playback..."
     if PYTHONPATH="$REPO_ROOT/src" "$DATA_VENV/bin/python" -m cheetah_synth.cli push-to-backend \
          --data-dir "$REPO_ROOT/data" --out-dir "$REPO_ROOT/data/synthetic" \
-         --run-id full --dataset-id "$DATASET_ID" --ingestion-mode live_events --start; then
+         --run-id full --dataset-id "$DATASET_ID" --ingestion-mode live_events \
+         --forecast-provider "$FORECAST_PROVIDER" --start; then
       echo "Auto-push complete — open http://127.0.0.1:8000/"
     else
       echo "Auto-push failed (see above) — API/worker are still running; push manually if needed." >&2

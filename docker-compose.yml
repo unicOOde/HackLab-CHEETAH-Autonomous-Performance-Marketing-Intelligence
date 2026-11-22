@@ -35,6 +35,7 @@ services:
     command: python worker.py
     environment:
       DATABASE_URL: postgresql+psycopg://cheetah:${POSTGRES_PASSWORD}@postgres:5432/cheetah
+      TABPFN_TOKEN: ${TABPFN_TOKEN:-}  # forecast service; requires backend/requirements-forecast.txt in the image
     depends_on:
       postgres:
         condition: service_healthy

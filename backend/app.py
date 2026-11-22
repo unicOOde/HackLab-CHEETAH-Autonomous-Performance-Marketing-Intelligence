@@ -1,3 +1,4 @@
+import env  # noqa: F401 — loads the repo-root .env before anything reads os.environ
 import asyncio, csv, io, json, os, uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +9,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, func, or_
 from sqlalchemy.exc import IntegrityError
 from models import initialize, SessionLocal, Run, Event, DailyAmount, SourceEvent, ForecastReference, ForecastValue, Command, Incident, Action, AgentTask, RunMetrics
-from core import serialize_run, emit, MONTH_DAYS, DAY_START, DAY_END, check_31_days, prior
+from core import serialize_run, emit, MONTH_DAYS, DAY_START, DAY_END, check_31_days, prior, reference_source
+import forecasting
 
 app=FastAPI(title='CHEETAH v1.5 MVP Backend',version='1.5.0')
 app.add_middleware(CORSMiddleware,allow_origins=os.getenv('CORS_ORIGINS','http://localhost:8000,http://127.0.0.1:8000').split(','),allow_methods=['GET','POST','PATCH'],allow_headers=['Content-Type','Last-Event-ID','Idempotency-Key'])
@@ -26,6 +28,7 @@ class RunRequest(BaseModel):
     mode:str='manual'
     ingestion_mode:str='preloaded_daily'
     event_source_path:str|None=None
+    forecast_provider:str='external'
 
 class CommandRequest(BaseModel):
     command:str
@@ -59,7 +62,7 @@ class ReferencesRequest(BaseModel):
     references:list[ReferenceRecord]
 
 @app.get('/api/v1/health')
-def health():return {'status':'ok','application':'CHEETAH v1.5','forecast_provider':'not_configured','agent_provider':'not_configured','graph_provider':'not_configured','source_data':'provided_later'}
+def health():return {'status':'ok','application':'CHEETAH v1.5','forecast_provider':forecasting.config()['status'],'forecast':forecasting.public_status(),'agent_provider':'not_configured','graph_provider':'not_configured','source_data':'provided_later'}
 
 @app.get('/api/v1/runs')
 def list_runs():
@@ -70,6 +73,7 @@ def list_runs():
 def create_run(req:RunRequest):
     if req.mode not in ('manual','auto'):raise HTTPException(422,'Invalid mode')
     if req.ingestion_mode not in ('preloaded_daily','live_events'):raise HTTPException(422,'Invalid ingestion_mode')
+    if req.forecast_provider not in ('external','tabpfn'):raise HTTPException(422,'Invalid forecast_provider')
     event_source_path=req.event_source_path
     if req.ingestion_mode=='live_events':
         if not req.dataset_id:raise HTTPException(422,'live_events runs require dataset_id')
@@ -78,7 +82,7 @@ def create_run(req:RunRequest):
         if not Path(event_source_path).exists():raise HTTPException(422,f'event_source_path not found: {event_source_path}')
     with SessionLocal() as db:
         speed=5.0 if req.ingestion_mode=='live_events' else 4.0  # benchmarked safe default (~2.9x headroom, full month in ~2.6min); floor is 3s/day for a faster/thinner-margin push (see core.execute_command)
-        run=Run(id='RUN-'+uuid.uuid4().hex[:12].upper(),dataset_id=req.dataset_id,seed=req.seed,mode=req.mode,ingestion_mode=req.ingestion_mode,event_source_path=event_source_path,speed_seconds=speed)
+        run=Run(id='RUN-'+uuid.uuid4().hex[:12].upper(),dataset_id=req.dataset_id,seed=req.seed,mode=req.mode,ingestion_mode=req.ingestion_mode,event_source_path=event_source_path,speed_seconds=speed,forecast_provider=req.forecast_provider)
         db.add(run);db.flush();emit(db,run.id,'simulation.state_changed',serialize_run(run));db.commit()
         return serialize_run(run)
 
@@ -109,7 +113,8 @@ def snapshot(run_id:str):
         tasks=db.scalars(select(AgentTask).where(AgentTask.run_id==run_id)).all()
         cursor=db.scalar(select(func.max(Event.event_id)).where(Event.run_id==run_id)) or 0
         rev=db.scalars(select(DailyAmount).where(DailyAmount.dataset_id==run.dataset_id).order_by(DailyAmount.day)).all() if run.dataset_id else []
-        refs=db.scalars(select(ForecastReference).where(ForecastReference.dataset_id==run.dataset_id)).all() if run.dataset_id else []
+        src=reference_source(run)
+        refs=db.scalars(select(ForecastReference).where(ForecastReference.dataset_id==run.dataset_id,*( [ForecastReference.source==src] if src else []))).all() if run.dataset_id else []
         source=db.scalars(select(SourceEvent).where(SourceEvent.dataset_id==run.dataset_id,SourceEvent.event_day<=MONTH_DAYS[run.simulated_day-1]).order_by(SourceEvent.event_time_utc.desc()).limit(150)).all() if run.dataset_id and run.simulated_day else []
         return {'run':serialize_run(run),'cursor':cursor,'incidents':[incident_dict(i) for i in entries],'tasks':[task_dict(t) for t in tasks], 'daily_data':[{'date':d.day,'amount':d.amount,'commission':d.commission,'payout':d.payout,'margin':d.margin,'source_kind':d.source_kind} for d in rev if d.day in MONTH_DAYS[:run.simulated_day]], 'data_ready':check_31_days(db,run.dataset_id), 'metrics':get_run_metrics(db,run), 'source_events':[{'kind':e.kind,'source_id':e.source_id,'event_time_utc':e.event_time_utc,'game_placement_id':e.game_placement_id,'country':e.country,'amount':e.amount,'commission':e.commission} for e in reversed(source)], 'references':[{'date':f.reference_day,'point':f.point,'lower':f.lower,'upper':f.upper,'forecast_reference_id':f.id} for f in refs if f.reference_day in MONTH_DAYS[:run.simulated_day]]}
 
@@ -343,15 +348,12 @@ def upload_outlook(req:OutlookRequest):
         raise HTTPException(422,'Exactly seven consecutive future daily forecasts required')
     if any(not v.lower<=v.point<=v.upper for v in req.daily):raise HTTPException(422,'Invalid forecast bounds')
     with SessionLocal() as db:
-        for value in req.daily:
-            db.add(ForecastValue(id='FCV-'+uuid.uuid4().hex[:16],dataset_id=req.dataset_id,issue_day=req.issue_day,target_day=value.target_day,point=value.point,lower=value.lower,upper=value.upper,model_version=req.model_version,source=req.source))
-        first=req.daily[0]
-        if first.target_day in MONTH_DAYS:
-            db.add(ForecastReference(id='FCR-'+uuid.uuid4().hex[:16],dataset_id=req.dataset_id,reference_day=first.target_day,issue_day=req.issue_day,point=first.point,lower=first.lower,upper=first.upper,model_version=req.model_version,source=req.source))
-        try:db.commit()
+        try:
+            locked=forecasting.store_outlook(db,req.dataset_id,req.issue_day,[v.model_dump() for v in req.daily],req.model_version,req.source)
+            db.commit()
         except IntegrityError:
             db.rollback();raise HTTPException(409,'Forecast vintage already exists; no overwrite permitted')
-    return {'accepted':7,'locked_next_day':first.target_day if first.target_day in MONTH_DAYS else None,'source':req.source}
+    return {'accepted':7,'locked_next_day':locked,'source':req.source}
 
 @app.get('/api/v1/runs/{run_id}/forecasts')
 def get_run_forecast(run_id:str):
@@ -360,8 +362,9 @@ def get_run_forecast(run_id:str):
         if not run:raise HTTPException(404,'Run not found')
         if not run.dataset_id:return {'issue_day':None,'daily':[],'status':'unavailable'}
         issue=MONTH_DAYS[run.simulated_day-1] if run.simulated_day else '2026-09-30'
-        values=db.scalars(select(ForecastValue).where(ForecastValue.dataset_id==run.dataset_id,ForecastValue.issue_day==issue).order_by(ForecastValue.target_day)).all()
-        return {'issue_day':issue,'daily':[{'date':v.target_day,'point':v.point,'lower':v.lower,'upper':v.upper,'model_version':v.model_version,'source':v.source} for v in values], 'status':'available' if len(values)==7 else 'unavailable'}
+        src=reference_source(run)
+        values=db.scalars(select(ForecastValue).where(ForecastValue.dataset_id==run.dataset_id,ForecastValue.issue_day==issue,*( [ForecastValue.source==src] if src else [])).order_by(ForecastValue.target_day)).all()
+        return {'issue_day':issue,'horizon_days':len(values),'source':values[0].source if values else None,'model_version':values[0].model_version if values else None,'daily':[{'date':v.target_day,'point':v.point,'lower':v.lower,'upper':v.upper,'model_version':v.model_version,'source':v.source} for v in values], 'status':'available' if values else 'unavailable'}
 
 @app.get('/api/v1/runs/{run_id}/incidents')
 def get_incidents(run_id:str):
@@ -384,4 +387,6 @@ def comparison_not_ready(run_id:str):return {'status':'unavailable','reason':'No
 def graph_not_ready():return {'status':'unavailable','reason':'Neo4j context model pending','graph_version':None,'nodes':[],'edges':[]}
 
 @app.get('/api/v1/agents/status')
-def agent_status():return {'agents':[{'name':name,'status':'not_configured' if name!='Deviation Detector' else 'ready_when_references_loaded'} for name in ['Forecast Service','Deviation Detector','Investigator','Evidence Reviewer','Fix Action']]}
+def agent_status():
+    fc=forecasting.config()['status']
+    return {'agents':[{'name':name,'status':fc if name=='Forecast Service' else ('ready_when_references_loaded' if name=='Deviation Detector' else 'not_configured')} for name in ['Forecast Service','Deviation Detector','Investigator','Evidence Reviewer','Fix Action']]}

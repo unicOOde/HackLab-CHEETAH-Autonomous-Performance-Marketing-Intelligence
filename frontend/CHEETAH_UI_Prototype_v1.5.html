@@ -264,7 +264,7 @@ renderMarketplaceView();renderKPIs();renderCampaignSelection();renderCampaignCha
 (function(){
 'use strict';
 const base=(window.CHEETAH_API_BASE||'/api/v1').replace(/\/$/,'');
-const state={run:null,cursor:0,source:null,incidents:[],tasks:[],daily:[],sourceRows:[],references:{},comparison:null,outlook:[],connection:'offline',selectedIncident:null};
+const state={run:null,cursor:0,source:null,incidents:[],tasks:[],daily:[],sourceRows:[],references:{},comparison:null,outlook:[],forecastInfo:null,provisional:null,connection:'offline',selectedIncident:null};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const stamp=s=>s?String(s):'Not available';
@@ -294,7 +294,16 @@ async function api(path,opts={}){
   const r=await fetch(base+path,{...opts,headers:{'Content-Type':'application/json',...opts.headers}});
   const body=await r.json().catch(()=>({detail:r.statusText}));if(!r.ok)throw Error(typeof body.detail==='string'?body.detail:JSON.stringify(body.detail||body));return body;
 }
+// Forecast-service connection pill: dark blue = TabPFN token loaded + package installed (backend
+// reports `configured`), light blue = not connected. Never receives or shows the token itself.
+async function loadForecastService(){try{state.forecastService=(await api('/health')).forecast||null}catch(e){state.forecastService=null}renderTabpfnPill()}
+function renderTabpfnPill(){const el=$('v15-tabpfn-pill');if(!el)return;const f=state.forecastService,ok=f?.status==='configured';
+ el.textContent=ok?'TabPFN · token loaded':'TabPFN · not connected';el.style.background=ok?'#1f3f9e':'#dbe4fb';el.style.color=ok?'#fff':'#3a5aa8';
+ const missing=!f?'backend unreachable':[!f.token_loaded&&'TABPFN_TOKEN not loaded',!f.package_installed&&'tabpfn-time-series not installed'].filter(Boolean).join(' · ');
+ const info=state.forecastInfo,last=info?.state==='unavailable'&&info.reason==='provider_error'?` · last call failed (${info.error_class||'error'})`:info?.state==='ok'&&info.source==='tabpfn_ts'?` · last forecast issued ${info.issue_day}`:'';
+ el.title=ok?`${f.model_version} · context ${f.context_days} d · horizon ${f.horizon_days} d${last}`:`Forecast service not connected: ${missing}`}
 async function init(){
+ loadForecastService();
  try{const data=await api('/runs');state.connection='connected';if(data.runs.length){await openRun(data.runs[0].run_id)}else updateRunUI()}
  catch(e){state.connection='backend unavailable';updateRunUI();console.info('CHEETAH v1.5 reference mode: FastAPI backend unavailable',e.message)}
 }
@@ -308,35 +317,110 @@ async function command(name,payload={}){
  catch(e){showToast('Command rejected: '+e.message)}
 }
 async function openRun(runId){
- const snap=await api('/runs/'+encodeURIComponent(runId)+'/snapshot');state.run=snap.run;state.cursor=snap.cursor||0;state.incidents=snap.incidents||[];state.tasks=snap.tasks||[];state.daily=snap.daily_data||[];state.metrics=snap.metrics||null;state.sourceRows=snap.source_events||[];state.references=Object.fromEntries((snap.references||[]).map(x=>[x.date,x]));state.outlook=[];await loadOutlook(runId);renderAll();connectStream(runId,state.cursor);
+ const snap=await api('/runs/'+encodeURIComponent(runId)+'/snapshot');state.run=snap.run;state.cursor=snap.cursor||0;state.incidents=snap.incidents||[];state.tasks=snap.tasks||[];state.daily=snap.daily_data||[];state.metrics=snap.metrics||null;state.sourceRows=snap.source_events||[];state.references=Object.fromEntries((snap.references||[]).map(x=>[x.date,x]));state.outlook=[];seedProvisional();await loadOutlook(runId);renderAll();connectStream(runId,state.cursor);
 }
-async function refreshSnapshot(){if(!state.run)return;try{const snap=await api('/runs/'+encodeURIComponent(state.run.run_id)+'/snapshot');state.run=snap.run;state.incidents=snap.incidents||[];state.tasks=snap.tasks||[];state.daily=snap.daily_data||[];state.metrics=snap.metrics||null;state.sourceRows=snap.source_events||[];state.references=Object.fromEntries((snap.references||[]).map(x=>[x.date,x]));await loadOutlook(state.run.run_id);renderAll()}catch(e){showToast('Refresh: '+e.message)}}
-async function loadOutlook(runId){try{const res=await api('/runs/'+encodeURIComponent(runId)+'/forecasts');state.outlook=res.daily||[]}catch(e){state.outlook=[]}}
-function connectStream(id,after){if(state.source)state.source.close();if(!window.EventSource)return;const source=new EventSource(base+'/runs/'+encodeURIComponent(id)+'/events?after='+after);state.source=source;state.connection='connecting';updateRunUI();source.onopen=()=>{state.connection='live SSE';updateRunUI()};source.onerror=()=>{state.connection='reconnecting / stale';updateRunUI()};const types=['simulation.state_changed','simulation.paused','source.events_batch','revenue.daily_finalized','forecast.evaluated','forecast.updated','forecast.unavailable','forecast.reference_unavailable','deviation.detected','agent.task_updated','evidence.review_completed','graph.version_committed','action.status_changed','replay.completed'];types.forEach(type=>source.addEventListener(type,event=>{const msg=JSON.parse(event.data);if(Number(msg.event_id)<=state.cursor)return;state.cursor=Number(msg.event_id);applyEvent(msg)}))}
+async function refreshSnapshot(){if(!state.run)return;try{const snap=await api('/runs/'+encodeURIComponent(state.run.run_id)+'/snapshot');state.run=snap.run;state.incidents=snap.incidents||[];state.tasks=snap.tasks||[];state.daily=snap.daily_data||[];state.metrics=snap.metrics||null;state.sourceRows=snap.source_events||[];state.references=Object.fromEntries((snap.references||[]).map(x=>[x.date,x]));seedProvisional();await loadOutlook(state.run.run_id);renderAll()}catch(e){showToast('Refresh: '+e.message)}}
+async function loadOutlook(runId){try{const res=await api('/runs/'+encodeURIComponent(runId)+'/forecasts');state.outlook=res.daily||[];state.forecastInfo=res.status==='available'?{state:'ok',issue_day:res.issue_day,source:res.source,model_version:res.model_version}:{state:'none',issue_day:res.issue_day}}catch(e){state.outlook=[]}}
+// In-progress day for live_events runs: seeded from the snapshot (run total minus closed days), then
+// advanced by each source.events_batch's installs — every install is in the batch, so no polling.
+function seedProvisional(){const r=state.run;if(!r||r.ingestion_mode!=='live_events'||(r.simulated_day||0)>=31){state.provisional=null;return}
+ const closed=state.daily.reduce((t,d)=>t+(Number(d.amount)||0),0);state.provisional={date:MONTH_NEXT(r.simulation_date||'2026-09-30'),amount:Math.max(0,(Number(state.metrics?.amount)||0)-closed)}}
+function connectStream(id,after){if(state.source)state.source.close();if(!window.EventSource)return;const source=new EventSource(base+'/runs/'+encodeURIComponent(id)+'/events?after='+after);state.source=source;state.connection='connecting';updateRunUI();source.onopen=()=>{state.connection='live SSE';updateRunUI()};source.onerror=()=>{state.connection='reconnecting / stale';updateRunUI()};const types=['simulation.state_changed','simulation.paused','source.events_batch','revenue.daily_finalized','forecast.evaluated','forecast.requested','forecast.updated','forecast.unavailable','forecast.reference_unavailable','deviation.detected','agent.task_updated','evidence.review_completed','graph.version_committed','action.status_changed','replay.completed'];types.forEach(type=>source.addEventListener(type,event=>{const msg=JSON.parse(event.data);if(Number(msg.event_id)<=state.cursor)return;state.cursor=Number(msg.event_id);applyEvent(msg)}))}
 function applyEvent(msg){const p=msg.payload||{};
  if(msg.event_type==='simulation.state_changed'){state.run={...state.run,...p}}
- if(msg.event_type==='source.events_batch'){state.sourceRows.push(...(p.events||[]));if(state.sourceRows.length>500)state.sourceRows=state.sourceRows.slice(-500);renderSourceFeed();
+ if(msg.event_type==='source.events_batch'){state.sourceRows.push(...(p.events||[]));
+  if(state.provisional)for(const e of p.events||[]){if(e.kind!=='install')continue;const d=String(e.event_time_utc).slice(0,10);if(d>state.provisional.date)state.provisional={date:d,amount:0};if(d===state.provisional.date)state.provisional.amount+=Number(e.amount)||0}if(state.sourceRows.length>500)state.sourceRows=state.sourceRows.slice(-500);renderSourceFeed();
   const feedPill=$('forecast-feed-pill');if(feedPill)feedPill.textContent=`${(p.events||[]).length} events since last refresh`;
  }
  // Reports' live/clicks/installs/summary tabs refresh on their own poll below, not per SSE event.
  if(msg.event_type==='revenue.daily_finalized'){state.daily=state.daily.filter(x=>x.date!==p.date);state.daily.push(p);state.daily.sort((a,b)=>a.date.localeCompare(b.date));
+  if(state.provisional&&state.provisional.date<=p.date)state.provisional={date:MONTH_NEXT(p.date),amount:0};
   if(reportsVisible()&&currentTab==='timeseries')renderReportsTimeSeriesLive();
  }
- if(msg.event_type==='forecast.evaluated')state.references[p.date]=p;if(msg.event_type==='forecast.updated')state.outlook=p.daily||[];
+ if(msg.event_type==='forecast.evaluated')state.references[p.date]=p;if(msg.event_type==='forecast.updated'){state.outlook=p.daily||[];state.forecastInfo={state:'ok',issue_day:p.issue_day,source:p.source,model_version:p.model_version}}
+ if(msg.event_type==='forecast.unavailable')state.forecastInfo={state:'unavailable',...p};
+ if(msg.event_type==='forecast.requested')state.forecastInfo={state:'requested',...p};
+ if(msg.event_type.startsWith('forecast.'))renderTabpfnPill();
  if(msg.event_type==='deviation.detected'&&!state.incidents.some(i=>i.incident_id===p.incident_id)){state.incidents.push({...p,lifecycle_status:'identified',evidence_outcome:'not_evaluated'})}
  if(msg.event_type==='agent.task_updated')state.tasks.push({...p,task_id:msg.event_id});
  if(msg.event_type==='replay.completed')state.comparison=p;
  if(msg.event_type==='simulation.paused')showToast('Simulation paused at detected anomaly; inspect Agentic Monitoring.');
  renderAll();
 }
-function drawChart(svg,data){
+const FC_COL={negative:'#c64651',positive:'#dea02d',within:'#178d76',none:'#b8c2cc',envelope:'#dbe4fb',historic:'#969ead',future:'#416bdd'};
+const dayLabel=d=>d?String(Number(d.slice(8,10)))+(d.slice(5,7)==='10'?' Oct':d.slice(5,7)==='11'?' Nov':''):'—';
+// Status of a closed day vs its locked reference. forecast.evaluated carries `classification`;
+// snapshot references don't, so derive it the same way the backend does (amount vs lower/upper).
+function dayStatus(d){const ref=state.references[d.date];if(!ref)return 'none';if(ref.classification)return ref.classification;const a=Number(d.amount);return a<ref.lower?'negative':a>ref.upper?'positive':'within'}
+function provisionalDay(){const r=state.run;if(!r||r.ingestion_mode!=='live_events'||!['running','paused','created','ready'].includes(r.status)||(r.simulated_day||0)>=31)return null;return state.provisional}
+// Daily Amount with historic locked references (grey dotted + envelope), the issued future forecast
+// (blue + envelope) and — for live_events runs — the in-progress day's provisional bar.
+function drawChart(svg,data,windowDays=7){
  if(!svg)return;svg.setAttribute('viewBox','0 0 1060 295');
- if(!data?.length){svg.innerHTML='<rect width="1060" height="295" fill="#f8fafb" rx="8"/><text x="530" y="140" text-anchor="middle" fill="#647889" font-size="18">October 2026 dataset not loaded</text><text x="530" y="168" text-anchor="middle" fill="#91a1af" font-size="12">Upload 31 daily Amount records and next-day forecast references</text>';return}
- const L=54,R=1030,T=28,B=238;const max=Math.max(1,...data.map(x=>Number(x.amount)||0),...state.outlook.map(x=>Number(x.upper)||0))*1.22;const x=i=>L+14+i*(R-L)/31;const y=v=>B-(v/max)*(B-T);let out='';
- for(let j=0;j<=4;j++){const v=max*j/4;out+=`<line x1="${L}" x2="${R}" y1="${y(v)}" y2="${y(v)}" stroke="#e3eaf0"/><text x="${L-7}" y="${y(v)+3}" font-size="10" text-anchor="end" fill="#8393a1">${Math.round(v/1000)}k</text>`}
- const future=state.outlook.filter(v=>v.date?.startsWith('2026-10-'));if(future.length){const p=future.map(v=>({i:Number(v.date.slice(-2))-1,high:v.upper,low:v.lower,point:v.point})).filter(v=>v.i>=0&&v.i<31);if(p.length>1){out+=`<polygon points="${p.map(v=>(x(v.i)+9)+','+y(v.high)).join(' ')} ${p.slice().reverse().map(v=>(x(v.i)+9)+','+y(v.low)).join(' ')}" fill="#dbe5fa" opacity=".85"/>`;out+=`<polyline points="${p.map(v=>(x(v.i)+9)+','+y(v.point)).join(' ')}" fill="none" stroke="#4774ca" stroke-width="2.5"/>`}}
- data.forEach((d,i)=>{let ref=state.references[d.date];let col=ref?.classification==='negative'?'#bd515b':ref?.classification==='positive'?'#dfa12d':'#17967d';out+=`<rect x="${x(i)}" y="${y(Number(d.amount))}" height="${B-y(Number(d.amount))}" width="${Math.max(3,(R-L)/31-5)}" rx="2" fill="${col}"><title>${esc(d.date)} · actual Amount ${eur(d.amount)}${ref?' · '+esc(ref.classification):' · reference unavailable'}</title></rect>`});
- for(let i=1;i<=31;i+=5){out+=`<text x="${x(i-1)+10}" y="${B+21}" text-anchor="middle" font-size="11" fill="#718494">${String(i).padStart(2,'0')} Oct</text>`};svg.innerHTML=out;
+ const prov=provisionalDay();
+ if(!data?.length&&!prov){svg.innerHTML='<rect width="1060" height="295" fill="#f8fafb" rx="8"/><text x="530" y="140" text-anchor="middle" fill="#647889" font-size="18">October 2026 dataset not loaded</text><text x="530" y="168" text-anchor="middle" fill="#91a1af" font-size="12">Upload 31 daily Amount records and next-day forecast references</text>';return}
+ const closed=(data||[]).slice(-windowDays),lastClosed=closed.length?closed.at(-1).date:'';
+ const future=state.outlook.filter(v=>v.date>lastClosed);
+ const dates=[...new Set([...closed.map(d=>d.date),...(prov?[prov.date]:[]),...future.map(v=>v.date)])].sort();
+ const actual=Object.fromEntries(closed.map(d=>[d.date,d])),fut=Object.fromEntries(future.map(v=>[v.date,v]));
+ const band=d=>actual[d]?state.references[d]:fut[d];  // locked reference for closed days, issued forecast for future ones
+ const L=60,R=1040,T=30,B=236,n=Math.max(dates.length,1),slot=(R-L)/n,bw=Math.min(54,slot*.55);
+ const vals=[...closed.map(d=>Number(d.amount)),...dates.map(d=>Number(band(d)?.upper)||0),prov?prov.amount:0];
+ const raw=Math.max(1,...vals.filter(Number.isFinite))*1.08,mag=10**Math.floor(Math.log10(raw/5));
+ const step=[1,2,2.5,5,10].map(m=>m*mag).find(st=>raw/st<=6),ticks=Math.ceil(raw/step),max=step*ticks;  // round €-ticks
+ const cx=i=>L+slot*(i+.5),y=v=>B-(Math.max(0,v)/max)*(B-T);let out='';
+ out+='<defs><pattern id="prov-hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="7" height="7" fill="#e3f1ec"/><line x1="0" y1="0" x2="0" y2="7" stroke="#8cc6b4" stroke-width="3"/></pattern></defs>';
+ for(let j=0;j<=ticks;j++){const v=step*j;out+=`<line x1="${L}" x2="${R}" y1="${y(v)}" y2="${y(v)}" stroke="#e5ebf1"/><text x="${L-9}" y="${y(v)+4}" font-size="10" text-anchor="end" fill="#7f8e9d">€${v>=1000?+(v/1000).toFixed(1)+'k':Math.round(v)}</text>`}
+ out+=`<text x="${L}" y="${T-8}" font-size="10.5" fill="#7f8e9d">Daily Amount (€ thousands)</text>`;
+ // min–max envelope: polygon over each contiguous run of days that have a band; a range bar for a lone day
+ let run=[];const flush=()=>{if(run.length>1){out+=`<polygon points="${run.map(i=>cx(i)+','+y(band(dates[i]).upper)).join(' ')} ${run.slice().reverse().map(i=>cx(i)+','+y(band(dates[i]).lower)).join(' ')}" fill="${FC_COL.envelope}" opacity=".85"/>`}else if(run.length===1){const b=band(dates[run[0]]);out+=`<rect x="${cx(run[0])-bw/2}" y="${y(b.upper)}" width="${bw}" height="${Math.max(2,y(b.lower)-y(b.upper))}" rx="4" fill="${FC_COL.envelope}" opacity=".85"/>`}run=[]};
+ dates.forEach((d,i)=>{band(d)?run.push(i):flush()});flush();
+ // bars: closed actuals coloured by status; provisional in-progress day hatched
+ dates.forEach((d,i)=>{const a=actual[d];if(a){const st=dayStatus(a),ref=state.references[d];out+=`<rect x="${cx(i)-bw/2}" y="${y(Number(a.amount))}" width="${bw}" height="${B-y(Number(a.amount))}" rx="2" fill="${FC_COL[st==='none'?'none':st]}"><title>${esc(d)} · actual Amount ${eur(a.amount)}${ref?` · reference ${eur(ref.lower)}–${eur(ref.upper)} · ${esc(st==='negative'?'below':st==='positive'?'above':st)}`:' · reference unavailable'}</title></rect>`}
+  else if(prov&&d===prov.date){out+=`<rect x="${cx(i)-bw/2}" y="${y(prov.amount)}" width="${bw}" height="${B-y(prov.amount)}" rx="2" fill="url(#prov-hatch)" stroke="#5aa58f" stroke-dasharray="3 3"><title>${esc(d)} · provisional Amount so far ${eur(prov.amount)} · not evaluated until day close</title></rect><text x="${cx(i)}" y="${y(prov.amount)-6}" text-anchor="middle" font-size="9.5" fill="#4d7f70">provisional</text>`}});
+ // divider between observed and future days
+ if(closed.length&&dates.length>closed.length){const xd=(cx(closed.length-1)+cx(closed.length))/2;out+=`<line x1="${xd}" y1="${T}" x2="${xd}" y2="${B}" stroke="#aebbd0" stroke-dasharray="4 4"/>`}
+ // historic locked references: grey dotted line + hollow points
+ const hist=dates.map((d,i)=>actual[d]&&state.references[d]?[i,state.references[d].point]:null).filter(Boolean);
+ if(hist.length>1)out+=`<polyline points="${hist.map(([i,v])=>cx(i)+','+y(v)).join(' ')}" fill="none" stroke="${FC_COL.historic}" stroke-width="2.2" stroke-dasharray="2 5" stroke-linecap="round"/>`;
+ // future forecast: blue line, joined to the last historic point when adjacent
+ const futPts=dates.map((d,i)=>fut[d]&&!actual[d]?[i,fut[d].point]:null).filter(Boolean);
+ const lastHist=hist.at(-1);const line=(lastHist&&futPts.length&&futPts[0][0]===lastHist[0]+1?[lastHist]:[]).concat(futPts);
+ if(line.length>1)out+=`<polyline points="${line.map(([i,v])=>cx(i)+','+y(v)).join(' ')}" fill="none" stroke="${FC_COL.future}" stroke-width="2.6"/>`;
+ hist.forEach(([i,v])=>{const last=i===hist.at(-1)[0]&&dates[i]===lastClosed;const st=dayStatus(actual[dates[i]]);out+=last&&st!=='within'?`<circle cx="${cx(i)}" cy="${y(v)}" r="6" fill="${FC_COL[st]}" stroke="#fff" stroke-width="2"><title>${esc(dates[i])} status: ${esc(st==='negative'?'below':'above')} locked reference</title></circle>`:`<circle cx="${cx(i)}" cy="${y(v)}" r="4.5" fill="#fff" stroke="${FC_COL.historic}" stroke-width="2"><title>${esc(dates[i])} · locked reference ${eur(v)}</title></circle>`});
+ futPts.forEach(([i,v])=>{const f=fut[dates[i]];out+=`<circle cx="${cx(i)}" cy="${y(v)}" r="5" fill="${FC_COL.future}" stroke="#fff" stroke-width="1.5"><title>${esc(dates[i])} · forecast ${eur(f.point)} (P10 ${eur(f.lower)} – P90 ${eur(f.upper)})</title></circle>`});
+ // x labels; the latest closed day in its status colour
+ dates.forEach((d,i)=>{if(n>16&&i%2&&d!==lastClosed)return;const st=d===lastClosed?dayStatus(actual[d]):null;const col=st&&st!=='within'&&st!=='none'?FC_COL[st]:'#718494';out+=`<text x="${cx(i)}" y="${B+22}" text-anchor="middle" font-size="11" fill="${col}"${st&&st!=='within'&&st!=='none'?' font-weight="700"':''}>${esc(i===0||d.slice(8)==='01'?dayLabel(d):String(Number(d.slice(8,10))))}</text>`});
+ svg.innerHTML=out;
+}
+// Footer + legend for the forecast cards: what is locked, what comes next, or why nothing is.
+function forecastMetaText(){
+ const r=state.run,info=state.forecastInfo||{},lastClosed=state.daily.at(-1);
+ const nextLocked=state.outlook.find(v=>v.date>(lastClosed?.date||''));
+ let locked,next;
+ if(nextLocked){locked=`<b>Locked day:</b> ${esc(dayLabel(nextLocked.date))} reference issued ${esc(dayLabel(info.issue_day||lastClosed?.date))} · ${esc(info.source==='tabpfn_ts'?'TabPFN-TS P10–P90':(info.source||'external'))} · immutable`}
+ else if(lastClosed&&state.references[lastClosed.date]){locked=`<b>Last locked day:</b> ${esc(dayLabel(lastClosed.date))} · no newer reference issued`}
+ else locked='<b>Locked day:</b> no reference issued yet';
+ if(r?.forecast_provider!=='tabpfn')next='<b>Next forecast:</b> externally supplied references only';
+ else if(info.state==='requested')next=`<b>Forecasting…</b> ${esc(dayLabel(info.new_day))} + ${esc(Math.max(0,(info.horizon_days||1)-1))} days · triggered by rollover to ${esc(dayLabel(info.new_day))} · context ${esc(dayLabel(info.context_days?.[0]))}–${esc(dayLabel(info.context_days?.[1]))}`;
+ else if(info.state==='unavailable'&&info.reason==='warm_up')next=`<b>Next forecast:</b> warm-up · ${esc(info.history_days)}/${esc(info.warmup_days)} days of history · first forecast at rollover to day ${esc(Number(info.warmup_days)+1)}`;
+ else if(info.state==='unavailable'&&info.reason==='not_configured')next='<b>Next forecast:</b> unavailable · forecast service not configured';
+ else if(info.state==='unavailable'&&info.reason==='provider_error')next=`<b>Next forecast:</b> provider error at close of ${esc(dayLabel(info.issue_day))} (${esc(info.error_class||'error')}) · no reference locked`;
+ else if(r?.status==='completed')next='<b>Next forecast:</b> none · run completed';
+ else next=`<b>Next forecast:</b> at rollover to ${esc(dayLabel(MONTH_NEXT(nextLocked?.date||(lastClosed?MONTH_NEXT(lastClosed.date):'2026-09-30'))))}`;
+ return {locked,next};
+}
+function MONTH_NEXT(d){const t=new Date(d+'T00:00:00Z');t.setUTCDate(t.getUTCDate()+1);return t.toISOString().slice(0,10)}
+function renderForecastMeta(){
+ const live=!!state.run,{locked,next}=forecastMetaText();
+ document.querySelectorAll('.v15-fc-legend,.v15-fc-foot').forEach(e=>e.classList.toggle('v15-hide-legacy',!live));
+ document.querySelectorAll('.v15-fc-locked').forEach(e=>e.innerHTML=locked);
+ document.querySelectorAll('.v15-fc-next').forEach(e=>e.innerHTML=next);
+ const last=state.daily.at(-1),st=last?dayStatus(last):'none';
+ document.querySelectorAll('.v15-fc-status').forEach(e=>{e.querySelector('i').style.background=FC_COL[st==='none'?'none':st];e.querySelector('span').textContent=last?`${dayLabel(last.date)} status: ${st==='negative'?'below':st==='positive'?'above':st==='none'?'unavailable':'within'}`:'Status'});
+ const tab=state.run?.forecast_provider==='tabpfn';
+ const fine=first(first($('screen-forecast'),'.chart-card'),'.fine');
+ if(fine&&state.run)fine.textContent=tab?'TabPFN-TS (Prior Labs) forecast issued at each day close from history through that day only; the next day is locked as the immutable reference.':'References are externally supplied for this run; no forecasts or anomalies are fabricated.';
 }
 const SOURCE_FEED_MAX=20;
 function renderSourceFeed(){const el=$('forecast-feed-body');if(!el||!state.run)return;
@@ -422,7 +506,7 @@ async function renderPerformanceReportLive(){
 }
 
 function renderReportsTimeSeriesLive(){
- drawChart($('timeseries-chart'),state.daily);
+ drawChart($('timeseries-chart'),state.daily,31);
  const badge=$('report-rowcount');if(badge)badge.textContent=`${state.daily.length} of 31 days · live`;
  const pill=$('reports-mode-pill');if(pill)pill.textContent='Live run data';
 }
@@ -514,33 +598,36 @@ window.__marketplaceRenderDetail=function(id){
  return true;
 };
 
-function renderOutlookTable(){const el=$('v15-outlook-body');if(!el)return;el.innerHTML=state.outlook.length?state.outlook.map(v=>`<tr><td>${esc(v.date)}</td><td class="num">${eur(v.point)}</td><td class="num">${eur(v.lower)}</td><td class="num">${eur(v.upper)}</td></tr>`).join(''):'<tr><td colspan="4" style="text-align:center;padding:14px">No 7-day forecast supplied yet.</td></tr>'}
+function renderOutlookTable(){const el=$('v15-outlook-body');if(!el)return;el.innerHTML=state.outlook.length?state.outlook.map(v=>`<tr><td>${esc(v.date)}</td><td class="num">${eur(v.point)}</td><td class="num">${eur(v.lower)}</td><td class="num">${eur(v.upper)}</td></tr>`).join(''):'<tr><td colspan="4" style="text-align:center;padding:14px">No forecast issued yet.</td></tr>'}
 function renderMetrics(){if(!state.run)return;
  const m=state.metrics;
  for(const [k,id] of [['amount','kpi-amount'],['commission','kpi-commission'],['payout','kpi-payout'],['margin','kpi-margin']])setText($(id),m?eur(m[k]):'—');
  for(const [k,id] of [['transactions','kpi-transactions'],['campaigns','kpi-campaigns']])setText($(id),m?num(m[k]):'—');
 }
-function renderAll(){updateRunUI();renderMetrics();renderSourceFeed();drawChart($('forecast-chart'),state.daily);drawChart($('campaign-chart'),state.daily);renderOutlookTable();renderIncidentBoard();renderAgentLog();renderCompare();const r=state.run;setText($('v15-forecast-run-info'),r?.run_id?`Run: ${r.run_id} · Last finalized: ${r.simulation_date||'none'} · Model references: externally provided or unavailable`:'Dataset and forecast provider not connected');setText($('v15-current-status'),r?status(r.status):'No connected simulation');if(reportsVisible())renderReportsView()}
+function renderAll(){updateRunUI();renderMetrics();renderSourceFeed();drawChart($('forecast-chart'),state.daily);drawChart($('campaign-chart'),state.daily);renderForecastMeta();renderOutlookTable();renderIncidentBoard();renderAgentLog();renderCompare();const r=state.run;setText($('v15-forecast-run-info'),r?.run_id?`Run: ${r.run_id} · Last finalized: ${r.simulation_date||'none'} · Model references: ${r.forecast_provider==='tabpfn'?'TabPFN-TS, issued by the worker at each day close':'externally provided or unavailable'}`:'Dataset and forecast provider not connected');setText($('v15-current-status'),r?status(r.status):'No connected simulation');if(reportsVisible())renderReportsView()}
 function renderIncidentBoard(){const lanes=document.querySelectorAll('#screen-incidents .kanban .lane');const statuses=[['identified'],['in_progress'],['resolved'],['paused','stopped']];lanes.forEach((lane,i)=>{const cases=state.incidents.filter(a=>statuses[i].includes(a.lifecycle_status));const head=lane.querySelector('.lane-title');if(head)head.querySelector('em').textContent=cases.length;lane.querySelectorAll('.incident-card,.empty-lane').forEach(e=>e.remove());cases.forEach(x=>lane.append(newElement(`<button class="incident-card" data-v15incident="${esc(x.incident_id)}"><div class="inc-id">${esc(x.incident_id)} · TOTAL AMOUNT</div><div class="inc-description">${esc(x.direction)} aggregate deviation</div><div class="inc-meta">${esc(x.detection_date)} · aggregate (not a campaign forecast)</div></button>`)));if(!cases.length)lane.append(newElement('<div class="empty-lane">No incidents</div>'))});document.querySelectorAll('[data-v15incident]').forEach(b=>b.onclick=()=>selectIncident(b.dataset.v15incident));if(state.incidents.length){selectIncident(state.selectedIncident||state.incidents.at(-1).incident_id)}else clearIncident()}
 function clearIncident(){state.selectedIncident=null;$('case-summary').innerHTML='<span class="pill pill-neutral">No incident selected</span>';setText($('investigation-badge'),'No active investigation');setText($('case-id'),'—');setText($('case-campaign'),'TOTAL AMOUNT');setText($('case-label'),'Aggregate forecast · no incident');setText($('case-date'),'—');setText($('case-compare'),'—');setText($('case-evidence'),'Not evaluated');setText($('case-outcome'),'No investigation');setText($('incident-mode'),'No live investigation available');setText($('focus-subtitle'),'Context model pending');setText($('context-focus-status'),'Graph version unavailable');setText($('v15-evidence-verdict'),'Not evaluated');setText($('v15-evidence-hypothesis'),'No hypothesis submitted');setText($('v15-action-state'),'No corrective action proposed');}
 function selectIncident(id){const inc=state.incidents.find(x=>x.incident_id===id);if(!inc)return;state.selectedIncident=id;$('case-summary').innerHTML='<span class="pill pill-neutral">Aggregate · '+esc(inc.lifecycle_status)+'</span>';setText($('investigation-badge'),status(inc.lifecycle_status));document.querySelectorAll('[data-v15incident]').forEach(e=>e.classList.toggle('selected',e.dataset.v15incident===id));setText($('case-id'),inc.incident_id);setText($('case-campaign'),'TOTAL AMOUNT');setText($('case-label'),`Aggregate · ${inc.direction}`);setText($('case-date'),inc.detection_date);setText($('case-compare'),`${eur(inc.actual_amount)} / ${eur(inc.lower)}–${eur(inc.upper)}`);setText($('case-evidence'),'Awaiting configured evidence tools');setText($('case-outcome'),status(inc.evidence_outcome));setText($('incident-mode'),inc.incident_id+' · original run evidence state');setText($('v15-evidence-verdict'),status(inc.evidence_outcome));setText($('v15-evidence-hypothesis'),'Not available until Investigator executes');}
 function renderAgentLog(){const el=$('agent-log-body');if(!el)return;el.innerHTML=state.tasks.length?state.tasks.map(t=>`<tr><td>—</td><td>${esc(t.agent)}</td><td>${esc(t.evidence_outcome||t.fallback||'Pending')}</td><td>${esc(t.task_id||t.run_id)}</td><td>${esc(t.status)}</td><td>—</td></tr>`).join(''):'<tr><td colspan="6" style="text-align:center;padding:17px">No agent tasks; live provider connections pending.</td></tr>'}
 function renderCompare(){setText($('v15-compare-outcome'),state.comparison?.status||'No validated replay comparison. Original run data will be preserved.');}
 function adapt(){document.title='CHEETAH — Frontend UI Prototype v1.5 · Integration Preview';
- document.querySelector('.global-meta').innerHTML='<span class="pill pill-neutral">October 2026 · aggregate-first</span><span class="pill pill-amber">Integration preview · data pending</span>';
+ document.querySelector('.global-meta').innerHTML='<span class="pill pill-neutral">October 2026 · aggregate-first</span><span class="pill pill-amber">Integration preview · data pending</span><span class="pill" id="v15-tabpfn-pill" style="background:#dbe4fb;color:#3a5aa8" title="Checking forecast service…">TabPFN · checking…</span>';
  createToolbar();
  // FE-02: replace the active campaign view while preserving the hidden original data module for MVP 2.
- let forecast=$('screen-forecast');first(forecast,'.desc').textContent='Aggregate customer Amount · rolling seven-day outlook · immutable next-day reference.';
+ let forecast=$('screen-forecast');first(forecast,'.desc').textContent='Aggregate customer Amount · forecast issued at each day close · immutable next-day reference.';
  first(forecast,'.right-actions').innerHTML='<span class="pill pill-teal">MVP 1 · aggregate</span><span class="pill pill-outline">1–31 Oct 2026</span>';
- const fcard=first(forecast,'.chart-card');first(fcard,'.section-title').textContent='Total Amount · seven-day forecast and actuals';first(fcard,'.fine').textContent='The simulation source and TabPFN references have not yet been provided; no forecasts or anomalies are fabricated.';
+ const fcard=first(forecast,'.chart-card');first(fcard,'.section-title').textContent='Total Amount · forecast and actuals';first(fcard,'.fine').textContent='The simulation source and TabPFN references have not yet been provided; no forecasts or anomalies are fabricated.';
  css($('campaign-selection'),'v15-hide-legacy');first(fcard,'.underchart').classList.add('v15-hide-legacy');fcard.querySelector('.row-between>span').textContent='Aggregate · day D forecast issued on D−1';
  $('campaign-chart').setAttribute('aria-label','Aggregate daily Amount and immutable forecast reference when available');
  $('campaign-chart').after(newElement('<div id="v15-forecast-run-info" class="v15-info">Dataset and forecast provider not connected</div>'));$('v15-forecast-run-info').after(newElement('<div class="table-scroll" style="margin-top:14px"><table><thead><tr><th>Future date</th><th class="num">Point Amount</th><th class="num">Lower</th><th class="num">Upper</th></tr></thead><tbody id="v15-outlook-body"><tr><td colspan="4">No 7-day forecast supplied yet.</td></tr></tbody></table></div>'));
  const fc=first(forecast,'.table-head .pill');fc.textContent='October source sample · live SSE pending';
  // Performance retains the original finance sample, but no November fixture forecast is shown.
  const perf=$('screen-performance');first(perf,'.right-actions').innerHTML='<span class="pill pill-outline">October 2026 · source sample only</span><button class="btn" onclick="go(\'forecast\')">Open Aggregate Forecast ↗</button>';
- let pc=first(perf,'.chart-card');first(pc,'.section-title').textContent='Daily Total Amount · October 2026';first(pc,'.fine').textContent='Live run uses authoritative aggregated Amount; original October sample KPI tiles are retained only while disconnected.';
+ let pc=first(perf,'.chart-card');first(pc,'.section-title').textContent='Total actual revenue & forecast range';first(pc,'.fine').textContent='Daily customer Amount · grey historic reference · blue future forecast · expected min/max envelope across the period';
  first(pc,'.chart-legend').classList.add('v15-hide-legacy');first(pc,'.underchart').innerHTML='<span><b>Reference:</b> prior-day next-day forecast is immutable within each run</span><span id="v15-current-status">No connected simulation</span>';
+ const fcLegend='<div class="chart-legend flexible-legend v15-fc-legend v15-hide-legacy"><span><i class="legend-key" style="background:#178d76"></i>Actual Amount</span><span><i class="legend-key dashed" style="border-color:#969ead"></i>Historic forecast</span><span><i class="legend-key" style="background:#416bdd;height:3px"></i>Future forecast</span><span><i class="legend-key" style="background:#dbe4fb"></i>Min–max range</span><span class="v15-fc-status"><i class="legend-key" style="width:9px;height:9px;border-radius:50%"></i><span>Status</span></span><span><i class="legend-key" style="background:#dea02d;width:9px;height:9px;border-radius:50%"></i>Above range = yellow</span></div>';
+ const fcFoot='<div class="underchart v15-fc-foot v15-hide-legacy"><span class="v15-fc-locked"></span><span class="v15-fc-next"></span></div>';
+ $('forecast-chart').before(newElement(fcLegend));$('forecast-chart').after(newElement(fcFoot));$('campaign-chart').before(newElement(fcLegend));$('campaign-chart').after(newElement(fcFoot));
  pc.querySelectorAll('.segmented button').forEach(b=>{b.disabled=true;b.title='Campaign-level stacking requires a complete attributable October dataset';});
  first(perf,'.reference-banner').classList.add('v15-hide-legacy');const counters=perf.querySelectorAll('.counter strong');counters.forEach(c=>c.textContent='0');
  first(perf,'.stats-row .fine').textContent='Incident counters update from the active simulation run; sample November incidents are excluded.';

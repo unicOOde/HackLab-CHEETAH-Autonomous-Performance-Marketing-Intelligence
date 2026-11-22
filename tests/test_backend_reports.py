@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'backend'))
 _tmp=tempfile.TemporaryDirectory()
+os.environ['CHEETAH_SKIP_DOTENV']='1'  # never load real keys from .env in tests
 os.environ['DATABASE_URL']='sqlite:///'+str(Path(_tmp.name)/'test_reports.db')
 from fastapi.testclient import TestClient
 from app import app

@@ -298,7 +298,7 @@ async function api(path,opts={}){
 // reports `configured`), light blue = not connected. Never receives or shows the token itself.
 async function loadForecastService(){try{state.forecastService=(await api('/health')).forecast||null}catch(e){state.forecastService=null}renderTabpfnPill()}
 function renderTabpfnPill(){const el=$('v15-tabpfn-pill');if(!el)return;const f=state.forecastService,ok=f?.status==='configured';
- el.textContent=ok?'TabPFN · token loaded':'TabPFN · not connected';el.style.background=ok?'#1f3f9e':'#dbe4fb';el.style.color=ok?'#fff':'#3a5aa8';
+ el.textContent=ok?'TabPFN · connected':'TabPFN · not connected';el.style.background=ok?'#1f3f9e':'#dbe4fb';el.style.color=ok?'#fff':'#3a5aa8';
  const missing=!f?'backend unreachable':[!f.token_loaded&&'TABPFN_TOKEN not loaded',!f.package_installed&&'tabpfn-time-series not installed'].filter(Boolean).join(' · ');
  const info=state.forecastInfo,last=info?.state==='unavailable'&&info.reason==='provider_error'?` · last call failed (${info.error_class||'error'})`:info?.state==='ok'&&info.source==='tabpfn_ts'?` · last forecast issued ${info.issue_day}`:'';
  el.title=ok?`${f.model_version} · context ${f.context_days} d · horizon ${f.horizon_days} d${last}`:`Forecast service not connected: ${missing}`}

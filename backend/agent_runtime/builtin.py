@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .bus import REPO_ROOT, AgentBus
+from .dispatcher import NAME as DISPATCHER, run_dispatcher
 from .scheduler import DEGRADED, OK, SKIPPED, AgentSpec, RunContext, RunResult
 
 PM, GE, INVESTIGATOR = "product_manager", "graph_engineer", "investigator"
@@ -226,14 +227,23 @@ def run_investigator(ctx: RunContext) -> RunResult:
     inv = InvestigatorAgent(run_overlooker=False)
     ref_ids = [m.msg_id for m in requests]
     llm_down = errors = 0
+
+    def reply(target: List[str], report: Dict[str, Any]) -> None:
+        # requests that asked for an answer (e.g. the dispatcher, per incident) get their own copy
+        for m in requests:
+            if m.payload.get("reply_to") and target in [list(t) for t in m.payload.get("targets", [])]:
+                ctx.post(m.payload["reply_to"], "report", {**report, "incident_id": m.payload.get("incident_id")},
+                         ref_ids=[m.msg_id])
+
     try:
         for label, node_id in targets:
             try:
                 res = inv.investigate(label, node_id)
             except Exception as exc:   # one bad target must not fail the others
                 errors += 1
-                ctx.post(PM, "report", {"source": INVESTIGATOR, "target": [label, node_id],
-                                        "error": f"{type(exc).__name__}: {exc}"}, ref_ids=ref_ids)
+                report = {"source": INVESTIGATOR, "target": [label, node_id], "error": f"{type(exc).__name__}: {exc}"}
+                ctx.post(PM, "report", report, ref_ids=ref_ids)
+                reply([label, node_id], report)
                 continue
             hyps = []
             for hid in res.hypotheses:
@@ -241,9 +251,10 @@ def run_investigator(ctx: RunContext) -> RunResult:
                 hyps.append({"id": hid, "text": h.get("text"), "confidence": h.get("confidence"),
                              "evidence": h.get("evidence"), "status": h.get("status")})
             llm_down += any("LLM unavailable" in d for d in res.dropped)
-            ctx.post(PM, "report", {"source": INVESTIGATOR, "data_side": "real", "target": [label, node_id],
-                                    "hypotheses": hyps, "graph_changes": res.updates, "dropped": res.dropped},
-                     ref_ids=ref_ids)
+            report = {"source": INVESTIGATOR, "data_side": "real", "target": [label, node_id],
+                      "hypotheses": hyps, "graph_changes": res.updates, "dropped": res.dropped}
+            ctx.post(PM, "report", report, ref_ids=ref_ids)
+            reply([label, node_id], report)
     finally:
         inv.store.close()
     status = DEGRADED if (llm_down or errors) else OK
@@ -254,7 +265,7 @@ def run_investigator(ctx: RunContext) -> RunResult:
 
 
 def run_product_manager(ctx: RunContext) -> RunResult:
-    """Compass: fix discussions + brief over everything in its inbox (agents/product_manager_agent.py)."""
+    """Croc: fix discussions + brief over everything in its inbox (agents/product_manager_agent.py)."""
     if not ctx.messages:
         return RunResult(OK, "inbox empty")
     _prepare_imports()
@@ -282,7 +293,7 @@ def run_product_manager(ctx: RunContext) -> RunResult:
 
 
 def run_graph_engineer(ctx: RunContext) -> RunResult:
-    """Cartographer: decide proposals, onboard submitted metrics; re-link when idle."""
+    """Buffalo: decide proposals, onboard submitted metrics; re-link when idle."""
     _prepare_imports()
     from agents.graph_engineer_agent import GraphEngineer
 
@@ -328,27 +339,30 @@ def default_specs(interval_s: Optional[float] = None) -> List[AgentSpec]:
     interval = float(interval_s or os.getenv("CHEETAH_AGENT_INTERVAL_S", 1800))
     return [
         AgentSpec("sim_clock", run_sim_clock, track="B", interval_s=interval, timeout_s=30,
-                  display_name="Chronos", role="Simulation clock",
+                  display_name="Giraffe", role="Simulation clock",
                   run_on_start=AgentBus().get_state("sim_clock") is None,   # fresh bus: start ticking now
                   description="Advances the shared simulated October 2026 clock one hour and announces clock.tick"),
         AgentSpec("pacing_watcher", run_pacing_watcher, track="B", on_events=("clock.tick",),
-                  display_name="Pacer", role="Pacing & auction watcher",
+                  display_name="Impala", role="Pacing & auction watcher",
                   available=_all(graph_unavailable, module="agents.pacing_watcher"),
                   description="Paid pacing & auction monitor (deterministic, simulated telemetry)"),
         AgentSpec("outage_agent", run_outage_agent, track="B", on_events=("clock.tick",),
-                  display_name="Sentinel", role="Outage scout",
+                  display_name="Oxpecker", role="Outage scout",
                   available=_all(graph_unavailable, llm_unavailable, module="agents.outage_agent"),
                   description="Web research: are services our ads depend on down right now?"),
+        AgentSpec(DISPATCHER, run_dispatcher, track="B", on_events=("sim.deviation_detected",), on_inbox=True,
+                  inbox_debounce_s=0.5, timeout_s=120, display_name="Anomaly Orchestrator", role="Incident dispatcher",
+                  description="Routes each detected incident to an agent and moves it identified → in progress → resolved"),
         AgentSpec(INVESTIGATOR, run_investigator, track="B", on_inbox=True,
-                  display_name="Sleuth", role="Investigator",
+                  display_name="Hyena", role="Investigator",
                   available=_all(graph_unavailable, llm_unavailable, module="agents.investigator_agent"),
                   description="Investigates flagged ads/outages and writes hypotheses with evidence"),
         AgentSpec(PM, run_product_manager, track="B", on_inbox=True,
-                  display_name="Compass", role="Product manager",
+                  display_name="Croc", role="Product manager",
                   available=_all(graph_unavailable, module="agents.product_manager_agent"),
                   description="Triage, business brief, fix discussions, proposals"),
         AgentSpec(GE, run_graph_engineer, track="B", on_inbox=True, interval_s=interval,
-                  display_name="Cartographer", role="Graph engineer",
+                  display_name="Buffalo", role="Graph engineer",
                   available=_all(graph_unavailable, module="agents.graph_engineer_agent"),
                   description="Hears out every agent, decides and writes graph structure"),
     ]

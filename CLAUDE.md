@@ -140,10 +140,10 @@ python3.12 -m venv .venv-backend && .venv-backend/bin/pip install -r backend/req
 ./start_backend.sh                           # starts uvicorn (--reload) + worker.py together; Ctrl+C stops both
 ```
 **`app.py` requires Python 3.10+** (`X | None` type hints — Pydantic can't resolve these on 3.9,
-confirmed even with `from __future__ import annotations`). The repo's own `.venv` is 3.9 (set up
-for `cheetah_synth`), so `start_backend.sh` expects the separate `.venv-backend` shown above, not
-`.venv`. `worker.py` is what actually executes queued commands and advances simulations — nothing
-happens without it running alongside the API.
+confirmed even with `from __future__ import annotations`). `cheetah_synth`'s own venv is
+`.venv-data` (3.9), so `start_backend.sh` expects the separate `.venv-backend` shown above, not
+`.venv-data`. `worker.py` is what actually executes queued commands and advances simulations —
+nothing happens without it running alongside the API.
 
 Once the backend is running, push the synthetic demo dataset into it:
 ```bash
@@ -156,7 +156,7 @@ independent dependency sets). Run the two suites with their separate scoped path
 isn't installed (missing `fastapi` fails collecting `test_backend.py`, which is a hard error, not
 a per-file skip).
 
-Synthetic data generator (from repo root, `.venv` with `numpy`/`pandas`/`openpyxl`/`pyarrow`):
+Synthetic data generator (from repo root, `.venv-data` with `numpy`/`pandas`/`openpyxl`/`pyarrow`):
 ```bash
 PYTHONPATH=src python -m cheetah_synth.cli calibrate
 PYTHONPATH=src python -m cheetah_synth.cli generate --run-id full --scale 1.0 --days 31 --seed 42
@@ -269,16 +269,16 @@ Move that into `agents/` before deleting the file.
   `NEO4J_DATABASE`) in `.env` (template: `.env.example`, never commit `.env`). Without them,
   `graph_store.py` falls back to `neo4j-cli` with credential `test`.
 - `ANTHROPIC_API_KEY` in `.env` for the agents.
-- Python venv: `.venv/` (anthropic, neo4j, networkx) — note this is a **different** `.venv` usage
-  than Track A's `.venv` (numpy/pandas/openpyxl/pyarrow for `cheetah_synth`); check which track
-  you're working in before assuming what's installed.
+- Python venv: `.venv-agents` (anthropic, neo4j, networkx) — a **separate** venv from Track A's
+  `.venv-data` (numpy/pandas/openpyxl/pyarrow for `cheetah_synth`) and `.venv-backend` (FastAPI
+  backend); check which track you're working in before assuming what's installed.
 
 ```bash
-.venv/bin/python freecash_graph.py > freecash_graph.cypher   # rebuild graph from CSVs (prints check to stderr)
+.venv-agents/bin/python freecash_graph.py > freecash_graph.cypher   # rebuild graph from CSVs (prints check to stderr)
 neo4j-cli query --rw --credential <aura-cred> < freecash_graph.cypher   # load (statements split on ';')
-.venv/bin/python run_agents.py                               # one full agent pass
-.venv/bin/python run_agents.py --target Ad:0003WS            # also investigate specific nodes
-.venv/bin/python run_agents.py --skip-outage --target "Category:Fashion & Apparel"
+.venv-agents/bin/python run_agents.py                               # one full agent pass
+.venv-agents/bin/python run_agents.py --target Ad:0003WS            # also investigate specific nodes
+.venv-agents/bin/python run_agents.py --skip-outage --target "Category:Fashion & Apparel"
 ```
 
 Neo4j skills (Cypher, modeling, GDS, Aura, drivers) live in `.agents/skills/`. Use them for

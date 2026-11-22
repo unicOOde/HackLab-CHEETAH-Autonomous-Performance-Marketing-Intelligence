@@ -2,7 +2,8 @@
 # Starts the CHEETAH backend for local (non-Docker) development: the FastAPI API (uvicorn,
 # --reload) and the worker that actually executes queued commands / advances simulations. Needs
 # a Python 3.10+ venv at .venv-backend (see backend/README.md — app.py's `X | None` type hints
-# require 3.10+; the repo's own .venv is pinned to 3.9 for cheetah_synth).
+# require 3.10+; .venv-data is pinned to 3.9 for cheetah_synth, .venv-agents is for the Neo4j
+# graph/agents track).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

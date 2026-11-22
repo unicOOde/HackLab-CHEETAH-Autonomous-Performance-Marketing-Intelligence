@@ -41,7 +41,7 @@ This package implements the approved FE-01–FE-10 **frontend design changes** a
 1. Copy `.env.example` to `.env`; set unique local passwords.
 2. `docker compose up --build` from this directory. API/UI at `http://127.0.0.1:8000/`. Neo4j management interface at `localhost:7474` (present for future graph integration, not yet queried by the API).
 
-**Without Docker** — needs a **Python 3.10+** venv (`app.py`'s `X | None` type hints fail on 3.9, even with `from __future__ import annotations`; see `backend/README.md`). The repo's own `.venv` is pinned to 3.9 for `cheetah_synth`, so use a separate one:
+**Without Docker** — needs a **Python 3.10+** venv (`app.py`'s `X | None` type hints fail on 3.9, even with `from __future__ import annotations`; see `backend/README.md`). The repo's `.venv-data` is pinned to 3.9 for `cheetah_synth`, so use a separate one:
 1. One-time setup: `python3.10 -m venv .venv-backend && .venv-backend/bin/pip install -r backend/requirements.txt`
 2. `./start_backend.sh` from the repo root (`chmod +x` it first if needed). This starts both the API (`uvicorn app:app --reload --port 8000`) and the worker (`worker.py` — actually executes queued commands and advances simulations; nothing runs without it) in one terminal, and stops both cleanly on `Ctrl+C`.
 
@@ -58,7 +58,7 @@ adapter that pushes a generated run straight into this backend's own ingestion e
 1. Start the server (see Quick start above) and confirm both the API and the worker are running.
 2. Push the synthetic dataset and start a run, from the repo root:
    ```bash
-   PYTHONPATH=src .venv/bin/python -m cheetah_synth.cli push-to-backend \
+   PYTHONPATH=src .venv-data/bin/python -m cheetah_synth.cli push-to-backend \
      --run-id full --dataset-id synth-full-v1 --start
    ```
    This ingests all 31 daily amounts, ~5,260 click/install source events, a naive placeholder

@@ -168,6 +168,11 @@ logo image not yet referenced by the HTML itself.
   day layer. It needs `NEO4J_URI`/`NEO4J_PASSWORD` and the `neo4j` driver. It emits `graph.synced`, or
   `graph.sync_unavailable` and continues. `/health`'s `graph_provider` reflects its config. Tests:
   `tests/test_backend_graph_sync.py` (fake writer).
+- **Context Explorer** (`backend/context_graph.py`, `GET /context/graph?label=&id=`, `GET /context/search?q=`): a read-only
+  neighbourhood view of the live Neo4j graph. It runs fixed Cypher only, with allow-listed labels, and returns
+  `unavailable` when not configured or on error. The UI screen draws the centre node with capped neighbour groups and
+  a panel (properties, monthly totals, latest day, agent findings, relationship counts). The sample graph is gone.
+  Tests: `tests/test_backend_context_graph.py`.
 - **Deliberately not implemented** (per `README.md` / `backend/README.md` — don't build around
   these as if they're just missing, they're explicitly deferred by the product owner pending
   inputs): Claude Investigator/Evidence Reviewer (bounded ReAct), Neo4j/MCP

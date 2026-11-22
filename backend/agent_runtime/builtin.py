@@ -360,7 +360,7 @@ TRACK_A_SERVICES: List[Dict[str, Any]] = [
     {"agent": "deviation_detector", "name": "Tripwire", "role": "Deviation detector", "runs_in_worker": True,
      "description": "Daily amount vs. the locked forecast interval (runs in the worker loop)"},
     {"agent": "forecast_service", "name": "Oracle", "role": "Forecast service", "runs_in_worker": False,
-     "reason": "TabPFN-TS inference not configured"},
+     "reason": "TabPFN-TS not configured (TABPFN_TOKEN + backend/requirements-forecast.txt)"},
     {"agent": "track_a_investigator", "name": "Inspector", "role": "Incident investigator", "runs_in_worker": False,
      "reason": "Claude/graph/evidence integrations required (AgentTask blocked_configuration)"},
     {"agent": "evidence_reviewer", "name": "Auditor", "role": "Evidence reviewer", "runs_in_worker": False,

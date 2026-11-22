@@ -7,7 +7,7 @@ If the bus directory doesn't exist, everything reports `not_configured` instead 
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from .builtin import TRACK_A_SERVICES, default_specs
 from .bus import AgentBus, Message, iso, utcnow
@@ -28,7 +28,8 @@ def known_agents() -> List[str]:
     return [s.name for s in default_specs()]
 
 
-def status(bus: Optional[AgentBus] = None) -> Dict[str, Any]:
+def status(bus: Optional[AgentBus] = None, configured: Iterable[str] = ()) -> Dict[str, Any]:
+    """`configured`: Track A services that are set up right now and so run in the worker loop."""
     bus = bus or AgentBus()
     now = utcnow()
     if not bus.exists:
@@ -46,7 +47,7 @@ def status(bus: Optional[AgentBus] = None) -> Dict[str, Any]:
     worker = bus.read_status("_worker")
     wh = worker_health(worker, now)
     for svc in TRACK_A_SERVICES:
-        h = wh if svc["runs_in_worker"] else {"health": NOT_CONFIGURED, "reason": svc["reason"]}
+        h = wh if svc["runs_in_worker"] or svc["agent"] in configured else {"health": NOT_CONFIGURED, "reason": svc["reason"]}
         agents.append({"agent": svc["agent"], "name": svc["name"], "role": svc["role"],
                        "track": "A", "source": "worker_thread",
                        "description": svc.get("description", ""), **h})

@@ -74,11 +74,12 @@ def close_day(db, run, day, amount):
             db.add(AgentTask(id='TASK-'+uuid.uuid4().hex[:10],run_id=run.id,incident_id=iid,agent='Investigator',status='blocked_configuration',fallback='Claude/graph/evidence integrations required'))
             emit(db,run.id,'agent.task_updated',{'incident_id':iid,'agent':'Investigator','status':'blocked_configuration','fallback':'Inference and graph connections pending'},day)
             publish_event('sim.deviation_detected',{'run_id':run.id,'incident_id':iid,'date':day,'direction':direction,'actual_amount':amount.amount,'lower':ref.lower,'upper':ref.upper},source='worker')
-    future=db.scalars(select(ForecastValue).where(ForecastValue.dataset_id==run.dataset_id,ForecastValue.issue_day==day).order_by(ForecastValue.target_day)).all()
-    if len(future)==7:
-        emit(db,run.id,'forecast.updated',{'issue_day':day,'horizon_days':7,'daily':[{'date':v.target_day,'point':v.point,'lower':v.lower,'upper':v.upper} for v in future],'source':future[0].source},day)
-    else:
-        emit(db,run.id,'forecast.unavailable',{'issue_day':day,'reason':'tabpfn_outlook_not_supplied'},day)
+    if run.forecast_provider!='tabpfn':  # tabpfn runs: forecast_after_close() issues and emits the outlook once this close is committed
+        future=db.scalars(select(ForecastValue).where(ForecastValue.dataset_id==run.dataset_id,ForecastValue.issue_day==day).order_by(ForecastValue.target_day)).all()
+        if len(future)==7:
+            emit(db,run.id,'forecast.updated',{'issue_day':day,'horizon_days':7,'daily':[{'date':v.target_day,'point':v.point,'lower':v.lower,'upper':v.upper} for v in future],'source':future[0].source},day)
+        else:
+            emit(db,run.id,'forecast.unavailable',{'issue_day':day,'reason':'tabpfn_outlook_not_supplied'},day)
     # agents can subscribe to this ("when a certain point is reached"); no-op without an agent bus
     publish_event('sim.day_closed',{'run_id':run.id,'date':day,'simulated_day':run.simulated_day+1,'amount':amount.amount},source='worker')
     run.simulated_day+=1

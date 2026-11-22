@@ -258,6 +258,12 @@ The first sync of a new dataset deletes every other dataset's day layer, and onl
 The step emits `graph.synced` or, when Neo4j isn't configured or the write fails, `graph.sync_unavailable`.
 Either way the run continues. When a write was attempted, the live tick stops there, as for the forecast.
 
+**Context Explorer (`backend/context_graph.py`).** `GET /context/graph?label=&id=` returns one node's neighbourhood
+from Neo4j. Neighbours are grouped by relationship, direction and label, and capped (with totals). The panel
+adds monthly totals, the latest closed day, agent findings and recent `Change` entries. `GET /context/search?q=`
+finds nodes. Only fixed, parameterized read queries run (read routing, 10 s timeout), and labels are allow-listed.
+When Neo4j isn't configured or a read fails, the response is `unavailable` and the screen draws no graph.
+
 ### F. Event delivery (outbox → SSE → UI)
 
 ```mermaid
@@ -365,7 +371,7 @@ gap in today's code to the diagram that covers it.
 | Capability | Where it stops today | Target diagram |
 |---|---|---|
 | System context: UI, backend, DB, graph, inference providers | `/health` reports every provider as `not_configured` | [01_system_context](PRD/architecture_diagrams/01_system_context.svg) |
-| Modular runtime and storage boundaries | Neo4j is provisioned but nothing queries it, and `/context/graph` returns `unavailable` | [02_runtime_components](PRD/architecture_diagrams/02_runtime_components.svg) |
+| Modular runtime and storage boundaries | Neo4j is written by the day layer and read by `/context/graph` (Context Explorer); there's no graph versioning yet | [02_runtime_components](PRD/architecture_diagrams/02_runtime_components.svg) |
 | Daily clock with a TabPFN forecast | **Built for the aggregate (one-day horizon by default)** via `forecast_provider='tabpfn'`. Per-placement (MVP 2) forecasts and interval calibration are still open | [03_daily_clock](PRD/architecture_diagrams/03_daily_clock.svg) |
 | Investigator (ReAct), Evidence Reviewer, graph and action governance | `AgentTask` stays `blocked_configuration`, and `actions` is never written | [04_agent_workflow](PRD/architecture_diagrams/04_agent_workflow.svg) |
 | Learning Replay and Fix Validation Replay | `POST /replays` → `409` | [05_replay_branches](PRD/architecture_diagrams/05_replay_branches.svg) |

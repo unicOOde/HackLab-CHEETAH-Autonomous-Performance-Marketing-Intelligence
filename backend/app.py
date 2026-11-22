@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from models import initialize, SessionLocal, Run, Event, DailyAmount, SourceEvent, ForecastReference, ForecastValue, Command, Incident, Action, AgentTask, RunMetrics
 from agent_runtime import api as agent_api
 from core import serialize_run, emit, MONTH_DAYS, DAY_START, DAY_END, check_31_days, prior, reference_source
-import forecasting, graph_sync
+import forecasting, graph_sync, context_graph
 
 app=FastAPI(title='CHEETAH v1.5 MVP Backend',version='1.5.0')
 app.add_middleware(CORSMiddleware,allow_origins=os.getenv('CORS_ORIGINS','http://localhost:8000,http://127.0.0.1:8000').split(','),allow_methods=['GET','POST','PATCH'],allow_headers=['Content-Type','Last-Event-ID','Idempotency-Key'])
@@ -385,8 +385,23 @@ def replay_not_ready(run_id:str):
 @app.get('/api/v1/runs/{run_id}/replays/comparison')
 def comparison_not_ready(run_id:str):return {'status':'unavailable','reason':'No validated replay branch exists'}
 
+def _context_read(fn,*args):
+    """Context Explorer reads: unavailable (never fabricated) when Neo4j isn't configured or fails."""
+    if graph_sync.config()['status']!='configured':return context_graph.unavailable('not_configured')
+    try:return fn(*args)
+    except ValueError as e:raise HTTPException(400,str(e))
+    except LookupError as e:raise HTTPException(404,str(e))
+    except Exception as e:return context_graph.unavailable('provider_error',type(e).__name__)
+
 @app.get('/api/v1/context/graph')
-def graph_not_ready():return {'status':'unavailable','reason':'Neo4j context model pending','graph_version':None,'nodes':[],'edges':[]}
+def context_graph_view(label:str|None=None,id:str|None=None,limit:int=12):
+    if label is not None and label not in context_graph.LABELS:raise HTTPException(400,'label not allowed')
+    if label and not id:raise HTTPException(400,'id required with label')
+    return _context_read(context_graph.neighbourhood,label,id,limit)
+
+@app.get('/api/v1/context/search')
+def context_search(q:str=''):
+    return _context_read(context_graph.search,q[:80])
 
 # ---------------------------------------------------------------------------- agents
 # Agents run as scheduler threads in worker.py (agent_runtime). The API only reads their files

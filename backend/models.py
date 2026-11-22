@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import create_engine, Column, String, Integer, Float, Boolean, DateTime, Text, ForeignKey, UniqueConstraint
+from sqlalchemy import create_engine, Column, String, Integer, Float, Boolean, DateTime, Text, ForeignKey, UniqueConstraint, Index, event, inspect
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 import os
 
@@ -21,6 +21,10 @@ class Run(Base):
     parent_run_id = Column(String, nullable=True)
     replay_type = Column(String, nullable=True)
     paused_reason = Column(String, nullable=True)
+    ingestion_mode = Column(String, nullable=False, default='preloaded_daily')
+    event_source_path = Column(String, nullable=True)
+    sim_clock_utc = Column(DateTime(timezone=True), nullable=True)
+    last_tick_wall_utc = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow)
 
@@ -49,8 +53,13 @@ class SourceEvent(Base):
     country = Column(String, nullable=True)
     amount = Column(Float, nullable=True)
     commission = Column(Float, nullable=True)
+    payout = Column(Float, nullable=True)
+    margin = Column(Float, nullable=True)
     payload = Column(Text, nullable=False, default='{}')
-    __table_args__ = (UniqueConstraint('dataset_id','kind','source_id'),)
+    __table_args__ = (
+        UniqueConstraint('dataset_id','kind','source_id'),
+        Index('ix_source_events_dataset_kind_day','dataset_id','kind','event_day'),
+    )
 
 class ForecastReference(Base):
     __tablename__ = 'forecast_references'
@@ -141,7 +150,65 @@ class AgentTask(Base):
     started_at = Column(DateTime(timezone=True), default=utcnow)
     ended_at = Column(DateTime(timezone=True), nullable=True)
 
+class RunMetrics(Base):
+    __tablename__ = 'run_metrics'
+    run_id = Column(String, ForeignKey('runs.id'), primary_key=True)
+    total_amount = Column(Float, nullable=False, default=0.0)
+    total_commission = Column(Float, nullable=False, default=0.0)
+    total_payout = Column(Float, nullable=False, default=0.0)
+    total_margin = Column(Float, nullable=False, default=0.0)
+    total_transactions = Column(Integer, nullable=False, default=0)
+    distinct_campaigns = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime(timezone=True), default=utcnow)
+
+class RunCampaignSeen(Base):
+    __tablename__ = 'run_campaigns_seen'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, ForeignKey('runs.id'), nullable=False)
+    game_placement_id = Column(String, nullable=False)
+    __table_args__ = (UniqueConstraint('run_id','game_placement_id'),)
+
 DB_URL = os.getenv('DATABASE_URL','sqlite:///./cheetah_dev.db')
 engine = create_engine(DB_URL, future=True, connect_args={'check_same_thread':False} if DB_URL.startswith('sqlite') else {})
+
+if DB_URL.startswith('sqlite'):
+    @event.listens_for(engine,'connect')
+    def _sqlite_pragmas(dbapi_connection, _record):
+        # Single-writer-by-design (see backend/README.md) — safe to relax durability for dev throughput.
+        cur=dbapi_connection.cursor()
+        cur.execute('PRAGMA journal_mode=WAL')
+        cur.execute('PRAGMA synchronous=NORMAL')
+        cur.execute('PRAGMA temp_store=MEMORY')
+        cur.execute('PRAGMA cache_size=-64000')
+        cur.close()
+
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
-def initialize(): Base.metadata.create_all(engine)
+
+def _recreate_if_schema_stale():
+    """create_all() only adds missing tables, never missing columns on a table that already
+    exists — so a model change (e.g. adding Run.ingestion_mode) leaves a pre-existing local SQLite
+    file broken ('no such column') until someone deletes it by hand. There's no migration tooling
+    in this repo and this file is explicitly disposable dev state (never committed, never
+    Postgres) — so just delete it and let create_all() below rebuild it fresh. Never do this for a
+    real (e.g. Postgres) database: schema drift there needs a real migration, not silent deletion."""
+    if not DB_URL.startswith('sqlite'):return
+    db_path=DB_URL.removeprefix('sqlite:///')
+    if not os.path.exists(db_path):return
+    inspector=inspect(engine)
+    existing_tables=set(inspector.get_table_names())
+    stale=False
+    for table in Base.metadata.tables.values():
+        if table.name not in existing_tables:continue
+        existing_cols={c['name'] for c in inspector.get_columns(table.name)}
+        expected_cols={c.name for c in table.columns}
+        if not expected_cols.issubset(existing_cols):
+            stale=True;break
+    if stale:
+        engine.dispose()
+        for suffix in ('','-wal','-shm'):
+            p=db_path+suffix
+            if os.path.exists(p):os.remove(p)
+
+def initialize():
+    _recreate_if_schema_stale()
+    Base.metadata.create_all(engine)

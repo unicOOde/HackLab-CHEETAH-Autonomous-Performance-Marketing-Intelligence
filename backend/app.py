@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
-from models import initialize, SessionLocal, Run, Event, DailyAmount, SourceEvent, ForecastReference, ForecastValue, Command, Incident, Action, AgentTask
+from models import initialize, SessionLocal, Run, Event, DailyAmount, SourceEvent, ForecastReference, ForecastValue, Command, Incident, Action, AgentTask, RunMetrics
 from core import serialize_run, emit, MONTH_DAYS, DAY_START, DAY_END, check_31_days, prior
 
 app=FastAPI(title='CHEETAH v1.5 MVP Backend',version='1.5.0')
@@ -24,6 +24,8 @@ class RunRequest(BaseModel):
     dataset_id:str|None=None
     seed:int=42
     mode:str='manual'
+    ingestion_mode:str='preloaded_daily'
+    event_source_path:str|None=None
 
 class CommandRequest(BaseModel):
     command:str
@@ -67,10 +69,36 @@ def list_runs():
 @app.post('/api/v1/runs',status_code=201)
 def create_run(req:RunRequest):
     if req.mode not in ('manual','auto'):raise HTTPException(422,'Invalid mode')
+    if req.ingestion_mode not in ('preloaded_daily','live_events'):raise HTTPException(422,'Invalid ingestion_mode')
+    event_source_path=req.event_source_path
+    if req.ingestion_mode=='live_events':
+        if not req.dataset_id:raise HTTPException(422,'live_events runs require dataset_id')
+        if not event_source_path:
+            event_source_path=str(Path(__file__).resolve().parent.parent/'data'/'synthetic'/req.dataset_id/'raw'/'event_timeline.parquet')
+        if not Path(event_source_path).exists():raise HTTPException(422,f'event_source_path not found: {event_source_path}')
     with SessionLocal() as db:
-        run=Run(id='RUN-'+uuid.uuid4().hex[:12].upper(),dataset_id=req.dataset_id,seed=req.seed,mode=req.mode)
+        speed=5.0 if req.ingestion_mode=='live_events' else 4.0  # benchmarked safe default (~2.9x headroom, full month in ~2.6min); floor is 3s/day for a faster/thinner-margin push (see core.execute_command)
+        run=Run(id='RUN-'+uuid.uuid4().hex[:12].upper(),dataset_id=req.dataset_id,seed=req.seed,mode=req.mode,ingestion_mode=req.ingestion_mode,event_source_path=event_source_path,speed_seconds=speed)
         db.add(run);db.flush();emit(db,run.id,'simulation.state_changed',serialize_run(run));db.commit()
         return serialize_run(run)
+
+def get_run_metrics(db,run):
+    """The six dashboard KPI tiles. live_events runs maintain a RunMetrics row incrementally on
+    every insert (core._deliver_rows) so this just reads it — ticking up live, including the
+    in-progress day. preloaded_daily runs have deliberately small data volume (today's demo
+    adapter pushes ~6k events total), so it's cheap and simpler-to-reason-about to recompute
+    live on every call rather than cache a row that would go stale as the run advances."""
+    if run.ingestion_mode=='live_events':
+        m=db.get(RunMetrics,run.id)
+        if m is None:return {'amount':0.0,'commission':0.0,'payout':0.0,'margin':0.0,'transactions':0,'campaigns':0}
+        return {'amount':m.total_amount,'commission':m.total_commission,'payout':m.total_payout,'margin':m.total_margin,'transactions':m.total_transactions,'campaigns':m.distinct_campaigns}
+    if not run.dataset_id:return None
+    revealed=MONTH_DAYS[:run.simulated_day]
+    if not revealed:return {'amount':0.0,'commission':0.0,'payout':0.0,'margin':0.0,'transactions':0,'campaigns':0}
+    amt=db.execute(select(func.coalesce(func.sum(DailyAmount.amount),0.0),func.coalesce(func.sum(DailyAmount.commission),0.0),func.coalesce(func.sum(DailyAmount.payout),0.0),func.coalesce(func.sum(DailyAmount.margin),0.0)).where(DailyAmount.dataset_id==run.dataset_id,DailyAmount.day.in_(revealed))).one()
+    tx=db.scalar(select(func.count()).select_from(SourceEvent).where(SourceEvent.dataset_id==run.dataset_id,SourceEvent.kind=='install',SourceEvent.event_day.in_(revealed))) or 0
+    campaigns=db.scalar(select(func.count(func.distinct(SourceEvent.game_placement_id))).where(SourceEvent.dataset_id==run.dataset_id,SourceEvent.event_day.in_(revealed))) or 0
+    return {'amount':float(amt[0]),'commission':float(amt[1]),'payout':float(amt[2]),'margin':float(amt[3]),'transactions':tx,'campaigns':campaigns}
 
 @app.get('/api/v1/runs/{run_id}/snapshot')
 def snapshot(run_id:str):
@@ -83,7 +111,7 @@ def snapshot(run_id:str):
         rev=db.scalars(select(DailyAmount).where(DailyAmount.dataset_id==run.dataset_id).order_by(DailyAmount.day)).all() if run.dataset_id else []
         refs=db.scalars(select(ForecastReference).where(ForecastReference.dataset_id==run.dataset_id)).all() if run.dataset_id else []
         source=db.scalars(select(SourceEvent).where(SourceEvent.dataset_id==run.dataset_id,SourceEvent.event_day<=MONTH_DAYS[run.simulated_day-1]).order_by(SourceEvent.event_time_utc.desc()).limit(150)).all() if run.dataset_id and run.simulated_day else []
-        return {'run':serialize_run(run),'cursor':cursor,'incidents':[incident_dict(i) for i in entries],'tasks':[task_dict(t) for t in tasks], 'daily_data':[{'date':d.day,'amount':d.amount,'source_kind':d.source_kind} for d in rev if d.day in MONTH_DAYS[:run.simulated_day]], 'data_ready':check_31_days(db,run.dataset_id), 'source_events':[{'kind':e.kind,'source_id':e.source_id,'event_time_utc':e.event_time_utc,'game_placement_id':e.game_placement_id,'country':e.country,'amount':e.amount,'commission':e.commission} for e in reversed(source)], 'references':[{'date':f.reference_day,'point':f.point,'lower':f.lower,'upper':f.upper,'forecast_reference_id':f.id} for f in refs if f.reference_day in MONTH_DAYS[:run.simulated_day]]}
+        return {'run':serialize_run(run),'cursor':cursor,'incidents':[incident_dict(i) for i in entries],'tasks':[task_dict(t) for t in tasks], 'daily_data':[{'date':d.day,'amount':d.amount,'commission':d.commission,'payout':d.payout,'margin':d.margin,'source_kind':d.source_kind} for d in rev if d.day in MONTH_DAYS[:run.simulated_day]], 'data_ready':check_31_days(db,run.dataset_id), 'metrics':get_run_metrics(db,run), 'source_events':[{'kind':e.kind,'source_id':e.source_id,'event_time_utc':e.event_time_utc,'game_placement_id':e.game_placement_id,'country':e.country,'amount':e.amount,'commission':e.commission} for e in reversed(source)], 'references':[{'date':f.reference_day,'point':f.point,'lower':f.lower,'upper':f.upper,'forecast_reference_id':f.id} for f in refs if f.reference_day in MONTH_DAYS[:run.simulated_day]]}
 
 def incident_dict(i):return {'incident_id':i.id,'run_id':i.run_id,'scope':i.scope,'metric':i.metric,'game_placement_id':i.game_placement_id,'detection_date':i.detection_date,'direction':i.direction,'actual_amount':i.actual_amount,'lower':i.lower,'upper':i.upper,'reference_forecast_id':i.forecast_reference_id,'lifecycle_status':i.lifecycle_status,'evidence_outcome':i.evidence_outcome}
 def task_dict(t):return {'task_id':t.id,'run_id':t.run_id,'incident_id':t.incident_id,'agent':t.agent,'status':t.status,'evidence_outcome':t.evidence_outcome,'fallback':t.fallback}

@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from . import anomalies as anomalies_mod
-from . import backend_adapter, export, journeys as journeys_mod, real_data, tabpfn_features, validate
+from . import backend_adapter, event_timeline, export, journeys as journeys_mod, real_data, tabpfn_features, validate
 from .calibration import Calibration, compute_calibration
 from .config import PathsConfig, RunConfig, ScaleConfig
 from .identities import IdAllocator, SYNTH_CLICK_ID_START, SYNTH_TRANSACTION_ID_START
@@ -80,6 +80,9 @@ def cmd_generate(args: argparse.Namespace) -> int:
     funnel_df.to_parquet(run_config.raw_dir / "funnel_events.parquet", index=False)
     labels_df.to_csv(run_config.labels_dir / "anomalies.csv", index=False)
 
+    timeline = event_timeline.build_event_timeline(journeys)
+    timeline.to_parquet(run_config.raw_dir / "event_timeline.parquet", index=False)
+
     click_paths = export.to_click_csvs(journeys, run_config.clicks_dir)
     tx = export.to_transaction_report(journeys, run_config.run_dir / "OCT26_Transaction Report.xlsx")
     perf = export.to_performance_report(
@@ -97,6 +100,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
         "n_clicks": len(journeys),
         "n_conversions": int(journeys["converts"].sum()),
         "n_click_files": len(click_paths),
+        "n_timeline_events": len(timeline),
     }
     with open(run_config.run_dir / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
@@ -145,18 +149,38 @@ def cmd_all(args: argparse.Namespace) -> int:
     return cmd_validate(args)
 
 
+def cmd_build_timeline(args: argparse.Namespace) -> int:
+    paths = PathsConfig(data_dir=Path(args.data_dir), out_dir=Path(args.out_dir))
+    run_config = RunConfig(run_id=args.run_id, paths=paths)
+    journeys = pd.read_parquet(run_config.raw_dir / "journeys.parquet")
+    timeline = event_timeline.build_event_timeline(journeys)
+    out_path = run_config.raw_dir / "event_timeline.parquet"
+    timeline.to_parquet(out_path, index=False)
+    print(f"Wrote {len(timeline)} events ({int((timeline['kind'] == 'click').sum())} click, "
+          f"{int((timeline['kind'] == 'install').sum())} install) to {out_path}")
+    return 0
+
+
 def cmd_push_to_backend(args: argparse.Namespace) -> int:
     paths = PathsConfig(data_dir=Path(args.data_dir), out_dir=Path(args.out_dir))
     run_dir = paths.run_dir(args.run_id)
     print(f"Pushing {run_dir} to {args.backend_url} as dataset_id={args.dataset_id!r} "
           f"(synthetic demo data, naive placeholder reference baseline — not a real forecast)...")
-    result = backend_adapter.push_run_to_backend(
-        run_dir, args.backend_url, args.dataset_id,
-        include_non_converting_sample=args.sample_clicks, seed=args.seed,
-        create_run=not args.no_create_run, start=args.start,
-    )
-    print(f"Pushed {result['daily_amounts']} daily amounts, {result['source_events']} source "
-          f"events, {result['references']} naive reference intervals.")
+    if args.ingestion_mode == "live_events":
+        result = backend_adapter.register_live_run(
+            run_dir, args.backend_url, args.dataset_id,
+            create_run=not args.no_create_run, start=args.start,
+        )
+        print(f"Registered live event timeline at {result['event_source_path']}, "
+              f"{result['references']} naive reference intervals.")
+    else:
+        result = backend_adapter.push_run_to_backend(
+            run_dir, args.backend_url, args.dataset_id,
+            include_non_converting_sample=args.sample_clicks, seed=args.seed,
+            create_run=not args.no_create_run, start=args.start,
+        )
+        print(f"Pushed {result['daily_amounts']} daily amounts, {result['source_events']} source "
+              f"events, {result['references']} naive reference intervals.")
     if "run_id" in result:
         print(f"Created run {result['run_id']}" + (" and sent 'start'." if result.get("started") else
               " — send a 'start' command (or use --start next time) to begin playback."))
@@ -200,16 +224,25 @@ def main(argv=None) -> int:
     p_all.add_argument("--force", action="store_true")
     p_all.set_defaults(func=cmd_all)
 
+    p_timeline = sub.add_parser("build-timeline")
+    add_common(p_timeline)
+    p_timeline.add_argument("--run-id", required=True)
+    p_timeline.set_defaults(func=cmd_build_timeline)
+
     p_push = sub.add_parser("push-to-backend")
     add_common(p_push)
     p_push.add_argument("--run-id", required=True)
     p_push.add_argument("--backend-url", default="http://127.0.0.1:8000")
     p_push.add_argument("--dataset-id", required=True)
     p_push.add_argument("--sample-clicks", type=int, default=0,
-                         help="also push this many randomly-sampled non-converting clicks per run, for volume texture")
+                         help="also push this many randomly-sampled non-converting clicks per run, for volume texture (preloaded_daily mode only)")
     p_push.add_argument("--seed", type=int, default=0)
     p_push.add_argument("--no-create-run", action="store_true")
     p_push.add_argument("--start", action="store_true")
+    p_push.add_argument("--ingestion-mode", choices=["preloaded_daily", "live_events"], default="preloaded_daily",
+                         help="preloaded_daily: bulk-POST everything up front (today's demo path). "
+                              "live_events: register the run's event_timeline.parquet and let the backend "
+                              "worker stream it in live, per event, as the run plays.")
     p_push.set_defaults(func=cmd_push_to_backend)
 
     args = parser.parse_args(argv)

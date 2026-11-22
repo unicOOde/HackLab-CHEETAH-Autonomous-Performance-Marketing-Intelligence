@@ -4,6 +4,11 @@
 # a Python 3.10+ venv at .venv-backend (see backend/README.md — app.py's `X | None` type hints
 # require 3.10+; .venv-data is pinned to 3.9 for cheetah_synth, .venv-agents is for the Neo4j
 # graph/agents track).
+#
+# Once the API is reachable, this also auto-pushes the `full` synthetic run as a fresh
+# live_events dataset and starts playback, so there's always a running demo without a manual
+# push-to-backend call. A fresh --dataset-id is generated every time (timestamped) so repeated
+# restarts never collide with a prior run. Set SKIP_AUTO_PUSH=1 to skip this and push manually.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,6 +39,31 @@ WORKER_PID=$!
 
 echo "API:    http://127.0.0.1:8000  (pid $UVICORN_PID)"
 echo "Worker: running (pid $WORKER_PID)"
+
+if [ "${SKIP_AUTO_PUSH:-0}" != "1" ]; then
+  DATA_VENV="$REPO_ROOT/.venv-data"
+  TIMELINE="$REPO_ROOT/data/synthetic/full/raw/event_timeline.parquet"
+  if [ ! -x "$DATA_VENV/bin/python" ] || [ ! -f "$TIMELINE" ]; then
+    echo "Auto-push skipped: need $DATA_VENV and $TIMELINE" >&2
+    echo "  (generate the latter with: PYTHONPATH=src .venv-data/bin/python -m cheetah_synth.cli generate --run-id full --scale 1.0 --days 31 --seed 42)" >&2
+  else
+    echo "Waiting for the API to come up..."
+    for _ in $(seq 1 30); do
+      curl -sf http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1 && break
+      sleep 1
+    done
+    DATASET_ID="synth-full-live-$(date +%Y%m%d%H%M%S)"
+    echo "Auto-pushing dataset_id=$DATASET_ID (live_events, full run) and starting playback..."
+    if PYTHONPATH="$REPO_ROOT/src" "$DATA_VENV/bin/python" -m cheetah_synth.cli push-to-backend \
+         --data-dir "$REPO_ROOT/data" --out-dir "$REPO_ROOT/data/synthetic" \
+         --run-id full --dataset-id "$DATASET_ID" --ingestion-mode live_events --start; then
+      echo "Auto-push complete — open http://127.0.0.1:8000/"
+    else
+      echo "Auto-push failed (see above) — API/worker are still running; push manually if needed." >&2
+    fi
+  fi
+fi
+
 echo "Press Ctrl+C to stop both."
 
 # Exit (and trigger cleanup) as soon as either process dies, so a crash in one doesn't leave

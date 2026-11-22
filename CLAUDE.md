@@ -79,6 +79,18 @@ logo image not yet referenced by the HTML itself.
   (`core.MONTH_DAYS`, `core.run_step`). The worker polls for `running` runs and queued `Command`s
   (`start`/`pause`/`resume`/`stop`/`step`/`set_speed`) — there's no API-synchronous simulation
   advance; commands are queued, then executed asynchronously by whichever worker picks them up.
+- **Two ingestion modes** (`Run.ingestion_mode`): **`preloaded_daily`** (default, as above) bulk-
+  loads the whole month before the run starts and only reveals already-stored rows as
+  `simulated_day` advances. **`live_events`** instead reads a sorted per-event Parquet file
+  (`event_source_path`, built by `cheetah_synth.event_timeline`) and genuinely streams rows into
+  `SourceEvent` live, one small batch per tick, as a continuous `sim_clock_utc` cursor crosses each
+  event's real timestamp (`core.advance_run_live`); `DailyAmount` for each day is computed by the
+  worker itself from that day's delivered events once its 24h window closes, not pre-supplied.
+  `set_speed`'s valid range is 3–60s/day for `live_events` (vs. 0.5–60 for `preloaded_daily`;
+  default created speed is 5s/day, ~2.6min for the full month). Benchmarked against the real
+  full-scale `event_timeline.parquet` (~3.73M rows): steady-state insert ceiling ~129,000
+  events/sec, real peak-hour clustering ~1.84x the daily average — 3s/day needs ~73,700 events/sec
+  at peak (1.75x headroom), below that the margin gets too thin and playback visibly lags.
 - **Event sourcing / outbox**: every state change is written to the `event_outbox` table
   (`core.emit`) and streamed to the frontend over SSE (`GET /api/v1/runs/{id}/events`), with
   `Last-Event-ID` resumption. The UI reconstructs state from `snapshot` + the event stream, not
@@ -90,7 +102,10 @@ logo image not yet referenced by the HTML itself.
   issued on a given day, TabPFN-shaped but TabPFN isn't wired up). A daily `Amount` outside its
   locked `ForecastReference` interval pauses the run and creates an `Incident`, which creates an
   `AgentTask` for the Investigator — immediately `blocked_configuration` rather than fabricating a
-  result, since Claude/Neo4j/evidence adapters aren't connected.
+  result, since Claude/Neo4j/evidence adapters aren't connected. `RunMetrics` (one row per run,
+  incrementally updated on every live insert) and `RunCampaignSeen` back the dashboard's six KPI
+  tiles (Amount/Commission/Payout/Margin/Transactions/Campaigns) so they read live, including the
+  in-progress day, rather than only updating once per day-close.
 - **Non-fabrication is a load-bearing design rule, not an implementation gap**: when an
   integration (TabPFN, Claude, Neo4j, sandbox fix actions, replay) isn't configured, the system
   must surface an explicit blocked/unavailable state (`AgentTask.status='blocked_configuration'`,
@@ -121,14 +136,20 @@ testing, and a TabPFN-ready forecasting table — a different thing from the bac
 `DailyAmount`/`SourceEvent` ingestion. See `data/synthetic/README.md` and the package's module
 docstrings for implementation detail.
 
-`cheetah_synth.backend_adapter` bridges the two: it pushes a generated run into the backend's own
-`/datasets/daily`, `/datasets/events`, `/forecasts/references` endpoints (then creates a `Run`)
-so the full ingest→playback→deviation-detection pipeline can be demoed without real data. The
-`ForecastReference` band it builds is a deliberately naive trailing-mean placeholder
+`cheetah_synth.backend_adapter` bridges the two. `push_run_to_backend()` (mode `preloaded_daily`)
+pushes a generated run into the backend's own `/datasets/daily`, `/datasets/events`,
+`/forecasts/references` endpoints (then creates a `Run`) so the full ingest→playback→deviation-
+detection pipeline can be demoed without real data. `register_live_run()` (mode `live_events`)
+instead only pre-loads forecast references and points a `Run` at `event_timeline.parquet`
+(`cheetah_synth.event_timeline.build_event_timeline` — one row per real click/install, sorted by
+timestamp, generated alongside `journeys.parquet`/`funnel_events.parquet`), letting the backend's
+own worker do genuinely live, per-event ingestion instead (see Backend bullets above). Either way
+the `ForecastReference` band is a deliberately naive trailing-mean placeholder
 (`source="synthetic_naive_baseline"`), tuned against the full run's own ~45% day-to-day amount
 volatility to flag roughly one deviation across the month — not a forecasting model, and not
 tuned to coincide with any particular injected anomaly. Everything it writes is clearly tagged
-synthetic (`source_kind="synthetic"`) so it can never be mistaken for real revenue.
+synthetic (`source_kind="synthetic"` / `"live_computed"`) so it can never be mistaken for real
+revenue.
 
 ### Track A commands
 
@@ -145,16 +166,23 @@ confirmed even with `from __future__ import annotations`). `cheetah_synth`'s own
 `.venv-data`. `worker.py` is what actually executes queued commands and advances simulations —
 nothing happens without it running alongside the API.
 
-Once the backend is running, push the synthetic demo dataset into it:
+Once the backend is running, push the synthetic demo dataset into it — bulk `preloaded_daily`
+(today's default) or genuinely live `live_events` (see Backend bullets above):
 ```bash
 PYTHONPATH=src python -m cheetah_synth.cli push-to-backend --run-id full --dataset-id synth-full-v1 --start
+PYTHONPATH=src python -m cheetah_synth.cli push-to-backend --run-id full --dataset-id synth-full-v2 --ingestion-mode live_events --start
 ```
-Backend tests: `pytest tests/test_backend.py` (needs `backend/requirements.txt` installed —
-not part of the top-level `pyproject.toml` deps, since the backend and `cheetah_synth` have
-independent dependency sets). Run the two suites with their separate scoped paths, not a bare
-`pytest tests/` — that aborts the *entire* run at collection time if `backend/requirements.txt`
-isn't installed (missing `fastapi` fails collecting `test_backend.py`, which is a hard error, not
-a per-file skip).
+`event_timeline.parquet` is generated automatically by `cheetah-synth generate`; for an
+already-generated run directory that predates it, build it separately with
+`PYTHONPATH=src python -m cheetah_synth.cli build-timeline --run-id full`.
+
+Backend tests: `pytest tests/test_backend.py tests/test_backend_live.py` (needs
+`backend/requirements.txt` installed — now includes `pandas`/`pyarrow`, required for the
+`live_events` scheduler — not part of the top-level `pyproject.toml` deps, since the backend and
+`cheetah_synth` have independent dependency sets). Run the two suites with their separate scoped
+paths, not a bare `pytest tests/` — that aborts the *entire* run at collection time if
+`backend/requirements.txt` isn't installed (missing `fastapi` fails collecting `test_backend.py`,
+which is a hard error, not a per-file skip).
 
 Synthetic data generator (from repo root, `.venv-data` with `numpy`/`pandas`/`openpyxl`/`pyarrow`):
 ```bash

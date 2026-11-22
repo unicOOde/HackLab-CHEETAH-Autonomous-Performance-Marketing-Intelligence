@@ -22,6 +22,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from . import event_timeline as event_timeline_mod
+
 MONTH_DAYS = [f"2026-10-{i:02d}" for i in range(1, 32)]
 
 
@@ -65,8 +67,8 @@ def build_daily_amounts(journeys: pd.DataFrame) -> list[dict]:
     ]
 
 
-def build_naive_references(daily_amounts: list[dict], window: int = 7, band_mult: float = 4.0,
-                            min_band_frac: float = 0.5) -> list[dict]:
+def build_naive_references(daily_amounts: list[dict], dataset_id: str, window: int = 7,
+                            band_mult: float = 4.0, min_band_frac: float = 0.5) -> list[dict]:
     """A trivial trailing-mean-and-band reference per day (from day 2 onward — day 1 has no
     trailing history, left unavailable, matching the backend's own handling of missing
     references). Deliberately naive: this is a placeholder so the pipeline has *something* to
@@ -77,7 +79,12 @@ def build_naive_references(daily_amounts: list[dict], window: int = 7, band_mult
     coefficient of variation in this dataset, measured directly against the full run. A tighter
     band (e.g. 1.5x std / 15% floor) flags ~30% of days as deviations, which isn't a usable demo
     of "pause on anomaly" — this width was tuned against data/synthetic/full to flag exactly one
-    day, enough to demonstrate the mechanic once without the run stalling out immediately."""
+    day, enough to demonstrate the mechanic once without the run stalling out immediately.
+
+    `id` is scoped by `dataset_id` — `ForecastReference.id` is the backend's sole primary key
+    (global across every dataset), so an unscoped id like `SYNREF-2026-10-01` would permanently
+    claim that reference for the *first* dataset ever pushed, and every later dataset (even a
+    brand-new `--dataset-id`) would 409 trying to post the same id again."""
     amounts = {r["day"]: r["amount"] for r in daily_amounts}
     refs = []
     for i, day in enumerate(MONTH_DAYS):
@@ -88,7 +95,7 @@ def build_naive_references(daily_amounts: list[dict], window: int = 7, band_mult
         std = float(np.std(history)) if len(history) > 1 else 0.0
         band = max(band_mult * std, min_band_frac * point)
         refs.append({
-            "id": f"SYNREF-{day}",
+            "id": f"SYNREF-{dataset_id}-{day}",
             "reference_day": day,
             "issue_day": MONTH_DAYS[i - 1],
             "point": round(point, 2),
@@ -137,6 +144,45 @@ def build_source_events(journeys: pd.DataFrame, include_non_converting_sample: i
     return events
 
 
+def register_live_run(run_dir: Path, backend_url: str, dataset_id: str,
+                       create_run: bool = True, start: bool = False) -> dict[str, Any]:
+    """Registers a run for the backend's `live_events` ingestion mode: the worker streams
+    `event_timeline.parquet` in live, per event, as the simulated clock advances — see
+    `event_timeline.py`. Unlike `push_run_to_backend()`, this does NOT bulk-POST DailyAmount or
+    SourceEvent rows; the worker computes each day's DailyAmount itself from the events it has
+    actually delivered by the time that day closes. Forecast references still get pre-loaded here
+    (they represent an external model's output issued before the day it evaluates, which is
+    unrelated to the live/bulk ingestion distinction)."""
+    timeline_path = run_dir / "raw" / "event_timeline.parquet"
+    if not timeline_path.exists():
+        journeys = load_journeys(run_dir)
+        event_timeline_mod.build_event_timeline(journeys).to_parquet(timeline_path, index=False)
+    # The backend (uvicorn/worker, started via start_backend.sh) runs with its cwd set to
+    # backend/, not the repo root this CLI runs from — a relative path here would resolve to the
+    # wrong place server-side, so always send an absolute path.
+    timeline_path = timeline_path.resolve()
+
+    daily_amounts = build_daily_amounts(load_journeys(run_dir))
+    references = build_naive_references(daily_amounts, dataset_id)
+    refs_resp = _post(backend_url, "/api/v1/forecasts/references",
+                       {"dataset_id": dataset_id, "references": references})
+
+    result = {"dataset_id": dataset_id, "references": len(references),
+              "references_response": refs_resp, "event_source_path": str(timeline_path)}
+
+    if create_run:
+        run_resp = _post(backend_url, "/api/v1/runs", {
+            "dataset_id": dataset_id,
+            "ingestion_mode": "live_events",
+            "event_source_path": str(timeline_path),
+        })
+        result["run_id"] = run_resp["run_id"]
+        if start:
+            _post(backend_url, f"/api/v1/runs/{run_resp['run_id']}/commands", {"command": "start"})
+            result["started"] = True
+    return result
+
+
 def push_run_to_backend(run_dir: Path, backend_url: str, dataset_id: str,
                          include_non_converting_sample: int = 0, seed: int = 0,
                          create_run: bool = True, start: bool = False,
@@ -152,7 +198,7 @@ def push_run_to_backend(run_dir: Path, backend_url: str, dataset_id: str,
         _post(backend_url, "/api/v1/datasets/events",
               {"dataset_id": dataset_id, "events": events[i:i + event_batch_size]})
 
-    references = build_naive_references(daily_amounts)
+    references = build_naive_references(daily_amounts, dataset_id)
     refs_resp = _post(backend_url, "/api/v1/forecasts/references",
                        {"dataset_id": dataset_id, "references": references})
 

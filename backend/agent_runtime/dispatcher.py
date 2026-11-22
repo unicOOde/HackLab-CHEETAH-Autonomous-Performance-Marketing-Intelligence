@@ -90,6 +90,31 @@ def _emit_task(db, t) -> None:
           "evidence_outcome": t.evidence_outcome, "fallback": t.fallback})
 
 
+STEP_EVENT = "investigation.step"
+
+
+def emit_step(db, run_id: str, incident_id: str, agent: str, kind: str, text: str,
+              focus: Optional[List[str]] = None, nodes: Optional[List[List[str]]] = None,
+              **extra: Any) -> None:
+    """One real step of an incident's investigation, for the UI's trail and graph position.
+
+    focus: the [label, id] graph node the agent is working on; nodes: [label, id, relation] around it
+    that the agent actually looked at. Nothing here is invented: callers pass what they just did."""
+    from core import emit
+    emit(db, run_id, STEP_EVENT, {"incident_id": incident_id, "agent": agent, "kind": kind, "text": text,
+                                  "focus": focus, "nodes": nodes or [], **extra})
+
+
+def record_step(run_id: Optional[str], incident_id: Optional[str], agent: str, kind: str, text: str, **kw: Any) -> None:
+    """emit_step in its own transaction, for agents that don't hold a DB session (the investigator)."""
+    if not (run_id and incident_id):
+        return
+    from models import SessionLocal
+    with SessionLocal() as db:
+        emit_step(db, run_id, incident_id, agent, kind, text, **kw)
+        db.commit()
+
+
 def _wait_for_incident(db, incident_id: str, timeout_s: float = 10.0):
     """The event is published inside the worker's day-close transaction, before its commit."""
     from models import Incident
@@ -121,6 +146,7 @@ def dispatch(ctx: RunContext, db, ev: Dict[str, Any]) -> str:
     if driver is None:
         own.evidence_outcome = "no_segment_driver"
         inc.investigation_summary = "No segment-level data to localise the deviation; not routed."
+        emit_step(db, inc.run_id, inc.id, NAME, "no_driver", inc.investigation_summary)
         _emit_task(db, own)
         _emit_incident(db, inc)
         db.commit()
@@ -132,10 +158,14 @@ def dispatch(ctx: RunContext, db, ev: Dict[str, Any]) -> str:
     inc.assigned_agent = INVESTIGATOR
     task = AgentTask(id="TASK-" + uuid.uuid4().hex[:10], run_id=inc.run_id, incident_id=inc.id,
                      agent=INVESTIGATOR, input_refs=json.dumps([driver]))
+    focus = [driver["label"], driver["id"]]
+    emit_step(db, inc.run_id, inc.id, NAME, "routed", where, focus=focus,
+              nodes=[["Total", "amount", "explains"]], driver=driver)
     reason = _investigator_unavailable()
     if reason:
         task.status, task.fallback = "blocked_configuration", reason
         inc.investigation_summary = f"{where}. Investigator unavailable: {reason}"
+        emit_step(db, inc.run_id, inc.id, INVESTIGATOR, "blocked", reason, focus=focus)
     else:
         msg = ctx.post(INVESTIGATOR, "investigate",
                        {"source": NAME, "data_side": "simulated", "reply_to": NAME, "incident_id": inc.id,
@@ -172,6 +202,9 @@ def close(db, msg) -> str:
         why = p.get("error") or "; ".join((p.get("dropped") or [])[:2]) or "no hypothesis survived validation"
         finding = f"No supported hypothesis ({why})"
     inc.lifecycle_status, inc.evidence_outcome = "resolved", outcome
+    target = p.get("target")
+    emit_step(db, inc.run_id, inc.id, msg.sender, "concluded", finding, outcome=outcome,
+              focus=list(target) if target and len(target) == 2 else None)
     inc.investigation_summary = ((inc.investigation_summary or "") + f" Investigator: {finding}").strip()
     if task is not None:
         task.status = "failed" if p.get("error") else "completed"

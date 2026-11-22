@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .bus import REPO_ROOT, AgentBus
-from .dispatcher import NAME as DISPATCHER, run_dispatcher
+from .dispatcher import NAME as DISPATCHER, record_step, run_dispatcher
 from .scheduler import DEGRADED, OK, SKIPPED, AgentSpec, RunContext, RunResult
 
 PM, GE, INVESTIGATOR = "product_manager", "graph_engineer", "investigator"
@@ -212,6 +212,27 @@ def run_outage_agent(ctx: RunContext) -> RunResult:
                      counts={"outages": len(impacts), "flagged": flagged}, uncertainties=agent.uncertainties)
 
 
+def neighbourhood(label: str, c: Dict[str, Any], limit: int = 3) -> List[List[str]]:
+    """[label, id, relation] of the graph nodes around the target that the investigator's context read."""
+    t = c.get("target") or {}
+    out: List[List[str]] = []
+    if label == "Ad":
+        if t.get("category"):
+            out.append(["Category", str(t["category"]), "IN_CATEGORY"])
+        for rel, key in (("CONVERTS_IN", "Country"), ("CONVERTS_AFTER", "LagBucket"), ("HAS_TYPE", "TransactionType")):
+            out += [[key, str(r["id"]), rel] for r in ((c.get("mix") or {}).get(key) or [])[:limit if key == "Country" else 1]]
+        out += [["Outage", str(o["id"]), "AFFECTS"] for o in c.get("open_outages_on_its_countries") or []]
+    elif label == "Country":
+        out += [["Ad", str(r["ad"]), "CONVERTS_IN"] for r in (c.get("top_ads_in_country") or [])[:limit]]
+        out += [["Outage", str(o["id"]), "AFFECTS"] for o in c.get("open_outages") or []]
+    elif label == "Category":
+        ads = sorted(c.get("ads_in_category") or [], key=lambda a: -(a.get("commission") or 0))
+        out += [["Ad", str(a["ad"]), "IN_CATEGORY"] for a in ads[:limit]]
+    elif label == "Outage":
+        out += [["Country", str(x), "AFFECTS"] for x in (c.get("affected_countries") or [])[:limit]]
+    return out
+
+
 def run_investigator(ctx: RunContext) -> RunResult:
     requests = ctx.messages_of("investigate")
     targets: List[Tuple[str, str]] = []
@@ -235,10 +256,39 @@ def run_investigator(ctx: RunContext) -> RunResult:
                 ctx.post(m.payload["reply_to"], "report", {**report, "incident_id": m.payload.get("incident_id")},
                          ref_ids=[m.msg_id])
 
+    def stepper(target: List[str]):
+        """Forward the investigator's progress on `target` to every incident that asked about it."""
+        incidents = [(m.payload.get("run_id"), m.payload.get("incident_id")) for m in requests
+                     if m.payload.get("incident_id") and target in [list(t) for t in m.payload.get("targets", [])]]
+
+        def on_step(kind: str, data: Dict[str, Any]) -> None:
+            if not incidents:
+                return
+            kw: Dict[str, Any] = {"focus": target}
+            if kind == "context":
+                kw["nodes"] = neighbourhood(target[0], data["context"])
+                text = f"Read the graph around {target[0]} {target[1]}: {len(kw['nodes'])} related node(s)"
+            elif kind == "reasoning":
+                text = "Asking the model for hypotheses grounded in that context"
+            elif kind == "hypothesis":
+                kw["hypothesis"] = {k: data.get(k) for k in ("id", "text", "confidence", "evidence")}
+                about = [list(a) for a in data.get("about") or []]
+                kw["nodes"] = [[a[0], a[1], "ABOUT"] for a in about if a != target]
+                text = f"Hypothesis ({data['confidence']:.2f}): {data['text']}"
+            else:
+                kw["dropped"] = {"reason": data.get("reason"), "text": data.get("text")}
+                text = f"Dropped: {data.get('reason')}"
+            for run_id, incident_id in incidents:
+                try:
+                    record_step(run_id, incident_id, INVESTIGATOR, kind, text, **kw)
+                except Exception:   # the UI trail must never break an investigation
+                    pass
+        return on_step
+
     try:
         for label, node_id in targets:
             try:
-                res = inv.investigate(label, node_id)
+                res = inv.investigate(label, node_id, on_step=stepper([label, node_id]))
             except Exception as exc:   # one bad target must not fail the others
                 errors += 1
                 report = {"source": INVESTIGATOR, "target": [label, node_id], "error": f"{type(exc).__name__}: {exc}"}

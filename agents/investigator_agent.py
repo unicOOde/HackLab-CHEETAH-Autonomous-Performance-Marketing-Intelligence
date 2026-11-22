@@ -15,7 +15,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from statistics import median
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from graph_store import BASE_LABELS, GraphStore, GraphWriteError
 from llm import LLMUnavailable, claude_json
@@ -238,19 +238,25 @@ class InvestigatorAgent:
         return bool(evidence) and all(ok(e) for e in evidence)
 
     # ------------------------------------------------------------------ run
-    def investigate(self, label: str, node_id: str) -> Investigation:
+    def investigate(self, label: str, node_id: str,
+                    on_step: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> Investigation:
+        """`on_step(kind, data)` reports progress as it happens (context, reasoning, hypothesis, dropped)."""
+        step = on_step or (lambda kind, data: None)
         inv = Investigation((label, node_id))
         ctx = self.context(label, node_id)
+        step("context", {"context": ctx})
         ctx_text = json.dumps(ctx, default=str)
         nums = {round(n, 3) for n in _numbers(ctx_text)} | {round(n, 2) for n in _numbers(ctx_text)}
         # shares are also commonly quoted as percentages
         nums |= {round(n * 100, 1) for n in _numbers(ctx_text) if 0 < abs(n) <= 1}
 
+        step("reasoning", {})
         try:
             data = claude_json(f"Investigate this target.\n\nContext:\n{json.dumps(ctx, indent=1, default=str)}",
                                HYPOTHESIS_SCHEMA, system=SYSTEM, effort="high")
         except LLMUnavailable as e:
             inv.dropped.append(f"LLM unavailable: {e}")
+            step("dropped", {"reason": f"LLM unavailable: {e}"})
             return inv
 
         for h in data.get("hypotheses", []):
@@ -264,9 +270,12 @@ class InvestigatorAgent:
                 reason = "evidence not grounded in context numbers"
             if reason:
                 inv.dropped.append(f"hypothesis dropped ({reason}): {h.get('text', '')[:100]}")
+                step("dropped", {"reason": reason, "text": h.get("text", "")})
                 continue
             hid = self.store.add_hypothesis(h["text"], float(h["confidence"]), h["evidence"], about)
             inv.hypotheses.append(hid)
+            step("hypothesis", {"id": hid, "text": h["text"], "confidence": float(h["confidence"]),
+                                "evidence": h["evidence"], "about": about})
             inv.decision_log.append({"action": "add_hypothesis", "id": hid, "about": about})
 
         for u in data.get("node_updates", []):

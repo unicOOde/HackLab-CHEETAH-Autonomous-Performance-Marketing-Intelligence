@@ -338,6 +338,9 @@ at the end over all collected change ids. Run standalone, each agent starts the 
 
 These run as scheduled threads in the backend worker (`backend/agent_runtime/`, file bus in
 `var/agent_bus/`, plan in `agents/orchestration_plan.md`), shown on the Agentic Monitoring tab.
+Each incident's real trail is emitted as `investigation.step` SSE events (`dispatcher.emit_step` /
+`record_step`; the investigator reports via `investigate(..., on_step=)`) and returned in the
+snapshot's `steps`. The UI's two incident graphs are drawn only from these.
 
 Still missing for the full loop (see DESCRIPTION.md): a continuous monitor for the real affiliate
 data (the pacing watcher covers simulated paid telemetry), and the demo scenarios with fault injection.

@@ -13,6 +13,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$REPO_ROOT/.venv-backend"
+PORT="${PORT:-3030}"
+API_URL="http://127.0.0.1:$PORT"
 
 if [ ! -x "$VENV/bin/python" ]; then
   echo "No Python 3.10+ venv found at $VENV" >&2
@@ -31,13 +33,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-"$VENV/bin/uvicorn" app:app --reload --port 8000 &
+"$VENV/bin/uvicorn" app:app --reload --port "$PORT" &
 UVICORN_PID=$!
 
 "$VENV/bin/python" worker.py &
 WORKER_PID=$!
 
-echo "API:    http://127.0.0.1:8000  (pid $UVICORN_PID)"
+echo "API:    $API_URL  (pid $UVICORN_PID)"
 echo "Worker: running (pid $WORKER_PID)"
 
 if [ "${SKIP_AUTO_PUSH:-0}" != "1" ]; then
@@ -49,7 +51,7 @@ if [ "${SKIP_AUTO_PUSH:-0}" != "1" ]; then
   else
     echo "Waiting for the API to come up..."
     for _ in $(seq 1 30); do
-      curl -sf http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1 && break
+      curl -sf "$API_URL/api/v1/health" >/dev/null 2>&1 && break
       sleep 1
     done
     # The API and worker load the repo-root .env themselves (backend/env.py). Default the demo run to

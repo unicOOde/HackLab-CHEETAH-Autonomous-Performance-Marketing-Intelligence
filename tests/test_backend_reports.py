@@ -84,7 +84,7 @@ def test_source_events_empty_dataset_returns_empty_not_an_error():
     body=client.get(f'/api/v1/runs/{run_id}/source_events').json()
     assert body=={'items':[],'next_cursor':None,'total_count':0}
     csv_r=client.get(f'/api/v1/runs/{run_id}/source_events',params={'format':'csv'})
-    assert csv_r.text.replace('\r\n','\n').strip('\n')=='id,kind,source_id,event_time_utc,event_day,game_placement_id,country,amount,commission,payout,margin,vertical,category'
+    assert csv_r.text.replace('\r\n','\n').strip('\n')=='id,kind,source_id,event_time_utc,event_day,game_placement_id,country,amount,commission,payout,margin,vertical,category,surface'
 
 
 def test_performance_report_computes_conversion_rate_ecpc_roas():

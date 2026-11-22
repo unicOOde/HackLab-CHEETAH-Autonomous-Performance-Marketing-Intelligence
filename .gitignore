@@ -103,3 +103,13 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 data/synthetic/full/raw/
+
+# Agent runtime bus (messages, status, outbox) — local state, regenerated
+var/
+
+# Generated graph loads: regenerate with freecash_graph.py (real data aggregates) / paid_sim.py
+freecash_graph.cypher
+paid_graph.cypher
+
+# CSV re-exports of the real Freecash data (same reason data/ is ignored)
+OCT26_*.csv

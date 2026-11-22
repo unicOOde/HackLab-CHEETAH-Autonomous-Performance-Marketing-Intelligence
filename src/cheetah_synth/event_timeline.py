@@ -15,7 +15,7 @@ import pandas as pd
 
 EVENT_TIMELINE_COLUMNS = [
     "event_time_utc", "kind", "source_id", "game_placement_id", "country",
-    "amount", "commission", "payout", "margin", "vertical", "category", "event_day",
+    "amount", "commission", "payout", "margin", "vertical", "category", "surface", "event_day",
 ]
 
 
@@ -28,6 +28,14 @@ def _meta_cols(placement_meta, placement_ids):
         return np.array([None] * n, dtype=object), np.array([None] * n, dtype=object)
     meta = placement_meta.reindex(np.asarray(placement_ids))
     return meta["vertical"].to_numpy(), meta["category"].to_numpy()
+
+
+def _surface(df):
+    """The page the click came from (search, for_you, ...; see surfaces.py). Installs carry the
+    surface of their originating click. None for journeys generated before surfaces existed."""
+    if "surface" in df.columns:
+        return df["surface"].to_numpy()
+    return np.array([None] * len(df), dtype=object)
 
 
 def build_event_timeline(journeys: pd.DataFrame, placement_meta: pd.DataFrame = None) -> pd.DataFrame:
@@ -45,6 +53,7 @@ def build_event_timeline(journeys: pd.DataFrame, placement_meta: pd.DataFrame = 
         "margin": np.full(n, np.nan),
         "vertical": click_vertical,
         "category": click_category,
+        "surface": _surface(journeys),
     })
 
     converted = journeys[journeys["converts"] & ~journeys["censored"]]
@@ -62,6 +71,7 @@ def build_event_timeline(journeys: pd.DataFrame, placement_meta: pd.DataFrame = 
         "margin": converted["margin"].to_numpy(),
         "vertical": install_vertical,
         "category": install_category,
+        "surface": _surface(converted),
     }) if m else pd.DataFrame(columns=clicks.columns)
 
     timeline = pd.concat([clicks, installs], ignore_index=True)

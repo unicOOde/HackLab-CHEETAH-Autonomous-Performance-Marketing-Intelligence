@@ -68,18 +68,21 @@ def build_daily_amounts(journeys: pd.DataFrame) -> list[dict]:
 
 
 def build_naive_references(daily_amounts: list[dict], dataset_id: str, window: int = 7,
-                            band_mult: float = 4.0, min_band_frac: float = 0.5) -> list[dict]:
-    """A trivial trailing-mean-and-band reference per day (from day 2 onward — day 1 has no
-    trailing history, left unavailable, matching the backend's own handling of missing
-    references). Deliberately naive: this is a placeholder so the pipeline has *something* to
-    compare against, not a forecasting model.
+                            band_mult: float = 4.0, min_band_frac: float = 0.15) -> list[dict]:
+    """A trivial trailing-median-and-MAD band per day (from day 2 onward — day 1 has no trailing
+    history, left unavailable, matching the backend's own handling of missing references).
+    Deliberately naive: this is a placeholder so the pipeline has *something* to compare
+    against, not a forecasting model.
 
-    The wide default band is a deliberate choice, not a loose first guess: daily revenue summed
-    over only ~96 conversions/day with heavy-tailed per-transaction amounts has ~45% day-to-day
-    coefficient of variation in this dataset, measured directly against the full run. A tighter
-    band (e.g. 1.5x std / 15% floor) flags ~30% of days as deviations, which isn't a usable demo
-    of "pause on anomaly" — this width was tuned against data/synthetic/full to flag exactly one
-    day, enough to demonstrate the mechanic once without the run stalling out immediately.
+    Median/MAD rather than mean/std so an anomalous day inside the trailing window neither drags
+    the next week's point estimate nor blows up its band — with a mean/std band, one -45% day
+    would widen the following seven bands enough to hide the next anomaly.
+
+    Sized for the `flat` daily profile (~3% day-to-day revenue noise, see
+    journeys.flatten_daily_revenue): 4 robust sigmas, floored at ±15% of the point, keeps normal
+    days inside the band while the four default revenue anomalies (-45%, -40%, +60%, -35%, see
+    anomalies.REVENUE_ANOMALY_PLAN) each breach it. A `calibrated`-profile run (~45% CV) would
+    flag many ordinary days with this width.
 
     `id` is scoped by `dataset_id` — `ForecastReference.id` is the backend's sole primary key
     (global across every dataset), so an unscoped id like `SYNREF-2026-10-01` would permanently
@@ -90,10 +93,10 @@ def build_naive_references(daily_amounts: list[dict], dataset_id: str, window: i
     for i, day in enumerate(MONTH_DAYS):
         if i == 0:
             continue
-        history = [amounts[MONTH_DAYS[j]] for j in range(max(0, i - window), i)]
-        point = float(np.mean(history))
-        std = float(np.std(history)) if len(history) > 1 else 0.0
-        band = max(band_mult * std, min_band_frac * point)
+        history = np.array([amounts[MONTH_DAYS[j]] for j in range(max(0, i - window), i)], dtype=float)
+        point = float(np.median(history))
+        robust_sigma = 1.4826 * float(np.median(np.abs(history - point))) if len(history) > 1 else 0.0
+        band = max(band_mult * robust_sigma, min_band_frac * point)
         refs.append({
             "id": f"SYNREF-{dataset_id}-{day}",
             "reference_day": day,
@@ -101,7 +104,7 @@ def build_naive_references(daily_amounts: list[dict], dataset_id: str, window: i
             "point": round(point, 2),
             "lower": round(point - band, 2),
             "upper": round(point + band, 2),
-            "model_version": "naive_trailing_mean_v0",
+            "model_version": "naive_trailing_median_v1",
             "source": "synthetic_naive_baseline",
         })
     return refs

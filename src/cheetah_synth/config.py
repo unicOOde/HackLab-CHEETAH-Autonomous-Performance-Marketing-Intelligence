@@ -54,7 +54,13 @@ class ToleranceConfig:
 class RunConfig:
     run_id: str
     seed: int = 42
-    anomalies: str = "default"  # "none" | "default"
+    anomalies: str = "default"  # "none" | "default" (4 day-level revenue anomalies) | "segment"
+    # "flat": daily click volume pinned to the calibrated monthly mean and daily revenue pinned
+    # near the month median (only `flat_noise` relative wiggle), so injected anomalies stand out
+    # clearly against the curve. "calibrated": reproduce the real day-to-day click shape and the
+    # raw (~45% CV) revenue volatility.
+    daily_profile: str = "flat"
+    flat_noise: float = 0.03
     paths: PathsConfig = field(default_factory=PathsConfig)
     scale: ScaleConfig = field(default_factory=ScaleConfig)
     tolerances: ToleranceConfig = field(default_factory=ToleranceConfig)

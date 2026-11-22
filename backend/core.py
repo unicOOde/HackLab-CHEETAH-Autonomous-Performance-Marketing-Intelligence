@@ -3,6 +3,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
+from agent_runtime import publish_event
 from models import Run, Event, Command, DailyAmount, SourceEvent, ForecastReference, ForecastValue, Incident, Action, AgentTask, RunMetrics, RunCampaignSeen, utcnow
 import forecasting
 
@@ -72,12 +73,14 @@ def close_day(db, run, day, amount):
             # Actual LLM investigation is not fabricated without configured Claude/Neo4j/evidence inputs.
             db.add(AgentTask(id='TASK-'+uuid.uuid4().hex[:10],run_id=run.id,incident_id=iid,agent='Investigator',status='blocked_configuration',fallback='Claude/graph/evidence integrations required'))
             emit(db,run.id,'agent.task_updated',{'incident_id':iid,'agent':'Investigator','status':'blocked_configuration','fallback':'Inference and graph connections pending'},day)
-    if run.forecast_provider!='tabpfn':  # tabpfn runs: forecast_after_close() issues and emits the outlook once this close is committed
-        future=db.scalars(select(ForecastValue).where(ForecastValue.dataset_id==run.dataset_id,ForecastValue.issue_day==day).order_by(ForecastValue.target_day)).all()
-        if len(future)==7:
-            emit(db,run.id,'forecast.updated',{'issue_day':day,'horizon_days':7,'daily':[{'date':v.target_day,'point':v.point,'lower':v.lower,'upper':v.upper} for v in future],'source':future[0].source},day)
-        else:
-            emit(db,run.id,'forecast.unavailable',{'issue_day':day,'reason':'tabpfn_outlook_not_supplied'},day)
+            publish_event('sim.deviation_detected',{'run_id':run.id,'incident_id':iid,'date':day,'direction':direction,'actual_amount':amount.amount,'lower':ref.lower,'upper':ref.upper},source='worker')
+    future=db.scalars(select(ForecastValue).where(ForecastValue.dataset_id==run.dataset_id,ForecastValue.issue_day==day).order_by(ForecastValue.target_day)).all()
+    if len(future)==7:
+        emit(db,run.id,'forecast.updated',{'issue_day':day,'horizon_days':7,'daily':[{'date':v.target_day,'point':v.point,'lower':v.lower,'upper':v.upper} for v in future],'source':future[0].source},day)
+    else:
+        emit(db,run.id,'forecast.unavailable',{'issue_day':day,'reason':'tabpfn_outlook_not_supplied'},day)
+    # agents can subscribe to this ("when a certain point is reached"); no-op without an agent bus
+    publish_event('sim.day_closed',{'run_id':run.id,'date':day,'simulated_day':run.simulated_day+1,'amount':amount.amount},source='worker')
     run.simulated_day+=1
     if run.simulated_day==31 and run.status=='running':
         run.status='completed'
@@ -147,6 +150,7 @@ def _deliver_rows(db, run, state, lo, hi):
     df=state['df']
     chunk=df.iloc[lo:hi]
     has_meta='vertical' in df.columns  # backward-compat: older event_timeline.parquet files predate vertical/category
+    has_surface='surface' in df.columns  # same, for the click surface (search, for_you, ...)
     rows=[{
         'dataset_id':run.dataset_id,'kind':r.kind,'source_id':r.source_id,
         'event_time_utc':r.event_time_utc.isoformat(),'event_day':r.event_day,
@@ -157,6 +161,7 @@ def _deliver_rows(db, run, state, lo, hi):
         'margin':None if pd.isna(r.margin) else float(r.margin),
         'vertical':(None if pd.isna(r.vertical) else r.vertical) if has_meta else None,
         'category':(None if pd.isna(r.category) else r.category) if has_meta else None,
+        'surface':(None if pd.isna(r.surface) else r.surface) if has_surface else None,
         'payload':'{}',
     } for r in chunk.itertuples()]
     db.bulk_insert_mappings(SourceEvent, rows)

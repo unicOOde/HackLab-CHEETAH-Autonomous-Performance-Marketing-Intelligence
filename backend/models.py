@@ -128,6 +128,8 @@ class Incident(Base):
     forecast_reference_id = Column(String, nullable=False)
     lifecycle_status = Column(String, default='identified')
     evidence_outcome = Column(String, default='not_evaluated')
+    assigned_agent = Column(String, nullable=True)        # set by the dispatcher agent (agent_runtime/dispatcher.py)
+    investigation_summary = Column(Text, nullable=True)   # routing reason, then the assigned agent's finding
     __table_args__ = (UniqueConstraint('run_id','metric','detection_date','direction'),)
 
 class Action(Base):

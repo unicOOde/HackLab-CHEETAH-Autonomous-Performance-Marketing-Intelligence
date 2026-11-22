@@ -1,4 +1,4 @@
-"""Graph engineer ("Cartographer"): the only agent that changes graph structure.
+"""Graph engineer ("Buffalo"): the only agent that changes graph structure.
 
 Spec: agents/graph_engineer.md (onboarding, re-link, fix stance), agents/orchestration_plan.md §5.3.
 

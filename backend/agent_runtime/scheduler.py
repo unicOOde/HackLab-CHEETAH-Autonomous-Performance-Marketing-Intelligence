@@ -59,7 +59,7 @@ class AgentSpec:
     name: str
     run: Callable[["RunContext"], Optional[RunResult]]
     description: str = ""
-    display_name: str = ""            # what the dashboard calls it (e.g. "Pacer")
+    display_name: str = ""            # what the dashboard calls it (e.g. "Impala")
     role: str = ""                    # one-line job title (e.g. "Pacing & auction watcher")
     track: str = "B"
     interval_s: Optional[float] = None

@@ -1,4 +1,4 @@
-"""Product manager ("Compass"): triage, fix discussions and the business brief.
+"""Product manager ("Croc"): triage, fix discussions and the business brief.
 
 Spec: agents/product_manager.md (role), agents/fix_playbook.md (fixes + gates),
 agents/orchestration_plan.md §5.2 / §5.5 (mechanics).

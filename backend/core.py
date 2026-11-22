@@ -70,10 +70,17 @@ def close_day(db, run, day, amount):
             run.status='paused';run.paused_reason='anomaly_detected'
             emit(db,run.id,'deviation.detected',{'incident_id':iid,'scope':'aggregate','metric':'amount_total','direction':direction,'date':day,'actual_amount':amount.amount,'lower':ref.lower,'upper':ref.upper,'reference_forecast_id':ref.id},day)
             emit(db,run.id,'simulation.paused',{'reason':'anomaly_detected','incident_id':iid,'date':day,'checkpoint':'day_close'},day)
-            # Actual LLM investigation is not fabricated without configured Claude/Neo4j/evidence inputs.
-            db.add(AgentTask(id='TASK-'+uuid.uuid4().hex[:10],run_id=run.id,incident_id=iid,agent='Investigator',status='blocked_configuration',fallback='Claude/graph/evidence integrations required'))
-            emit(db,run.id,'agent.task_updated',{'incident_id':iid,'agent':'Investigator','status':'blocked_configuration','fallback':'Inference and graph connections pending'},day)
-            publish_event('sim.deviation_detected',{'run_id':run.id,'incident_id':iid,'date':day,'direction':direction,'actual_amount':amount.amount,'lower':ref.lower,'upper':ref.upper},source='worker')
+            # The dispatcher agent (agent_runtime/dispatcher.py) picks an agent for the incident and
+            # moves it identified -> in_progress -> resolved. Without an agent bus nobody will pick it
+            # up, so the task is blocked instead of pretending an investigation is coming.
+            published=publish_event('sim.deviation_detected',{'run_id':run.id,'incident_id':iid,'dataset_id':run.dataset_id,'date':day,'direction':direction,'actual_amount':amount.amount,'point':ref.point,'lower':ref.lower,'upper':ref.upper},source='worker')
+            tid='TASK-'+uuid.uuid4().hex[:10]
+            if published:
+                db.add(AgentTask(id=tid,run_id=run.id,incident_id=iid,agent='dispatcher',status='queued'))
+                emit(db,run.id,'agent.task_updated',{'task_id':tid,'incident_id':iid,'agent':'dispatcher','status':'queued'},day)
+            else:
+                db.add(AgentTask(id=tid,run_id=run.id,incident_id=iid,agent='Investigator',status='blocked_configuration',fallback='Claude/graph/evidence integrations required'))
+                emit(db,run.id,'agent.task_updated',{'task_id':tid,'incident_id':iid,'agent':'Investigator','status':'blocked_configuration','fallback':'Agent bus not configured'},day)
     if run.forecast_provider!='tabpfn':  # tabpfn runs: forecast_after_close() issues and emits the outlook once this close is committed
         future=db.scalars(select(ForecastValue).where(ForecastValue.dataset_id==run.dataset_id,ForecastValue.issue_day==day).order_by(ForecastValue.target_day)).all()
         if len(future)==7:

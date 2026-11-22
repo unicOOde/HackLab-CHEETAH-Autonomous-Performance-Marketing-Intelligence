@@ -315,11 +315,11 @@ at the end over all collected change ids. Run standalone, each agent starts the 
 - `graph_overlooker.py`: explores the graph with read-only Cypher and proposes edge/property/status
   changes. Each one needs reasoning + evidence queries, and an **independent reviewer call** sees
   the re-run evidence and must approve it.
-- `product_manager_agent.py` ("Compass"): one fix discussion per reported issue: playbook candidate
+- `product_manager_agent.py` ("Croc"): one fix discussion per reported issue: playbook candidate
   (`agents/fix_playbook.md`), one round of stances (`agents/stances.py`), then seven deterministic
   gates decide `fix_proposed` / `no_fix` + reason / `graph_only` / `monitor`. Read-only on the graph.
   Only P1 is fully measured; other playbook entries are never proposed until a watcher reports them.
-- `graph_engineer_agent.py` ("Cartographer"): metric onboarding (`GraphStore.add_metric` /
+- `graph_engineer_agent.py` ("Buffalo"): metric onboarding (`GraphStore.add_metric` /
   `link_metrics`; FORMULA only with residual <= 1e-6 globally and per slice), and validation of
   INFLUENCES edges as `ag_status='validated'` (read status as `coalesce(ag_status, status)`).
   INFLUENCES writes need the independent reviewer; without the LLM they are deferred.

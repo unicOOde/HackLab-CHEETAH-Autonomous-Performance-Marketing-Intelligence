@@ -22,7 +22,6 @@ from __future__ import annotations
 import ast
 import json
 import math
-import os
 import re
 import uuid
 from datetime import datetime, timezone
@@ -32,7 +31,6 @@ from graph_store import METRIC_UNITS, GraphStore, GraphWriteError, is_read_only
 from agents.stances import ABSTAIN, OBJECT, SUPPORT, Stance, investigator_stance, outage_stance
 
 AGENT = "graph_engineer"
-LARGE_MODEL = os.getenv("CLAUDE_MODEL_LARGE", "claude-opus-5-5")
 PAID_COLUMNS = ("auctions", "impressions", "clicks", "spend", "conversions", "revenue")
 PAID_SOURCE_Q = ("MATCH (a:Ad)-[e:PAID_IN_HOUR]->(:Hour) RETURN a.id AS ad, e.country AS country, "
                  + ", ".join(f"sum(e.{c}) AS {c}" for c in PAID_COLUMNS))
@@ -162,7 +160,7 @@ def review(proposal: Dict[str, Any], evidence: List[str], stances: List[Stance])
               + "\n\nStances of the other agents:\n"
               + "\n".join(f"- {s.agent}: {s.stance}: {s.argument}" for s in stances))
     try:
-        return claude_json(prompt, schema, system=system, effort="high", model=LARGE_MODEL)
+        return claude_json(prompt, schema, system=system, effort="high", model="large")
     except LLMUnavailable as exc:
         return {"unknown": f"LLM unavailable: {str(exc)[:160]}"}
 
@@ -372,7 +370,7 @@ class GraphEngineer:
             ans = claude_json(f"New metric {mid!r}. Correlated metrics (cross-sectional over ad x country slices): "
                               f"{json.dumps(cands)}. For each, say whether a causal mechanism plausibly links them "
                               "and in which direction; 'none' when the correlation is only shared volume or "
-                              "definition overlap.", MECHANISM_SCHEMA, effort="high", model=LARGE_MODEL)
+                              "definition overlap.", MECHANISM_SCHEMA, effort="high", model="large")
         except LLMUnavailable as exc:
             d["uncertainties"].append(f"INFLUENCES candidates for {mid} not written ({exc}): {names}")
             return

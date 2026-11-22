@@ -1,7 +1,12 @@
 """Claude helper for the agents: one call -> one JSON object matching a schema.
 
 Credentials: ANTHROPIC_API_KEY (env or .env), or any other credential the SDK resolves.
-Model: CLAUDE_MODEL env, default claude-opus-5-5.
+Model: every call names a tier, resolved from env at call time (after .env is loaded):
+    "small"  CLAUDE_MODEL_SMALL   default claude-haiku-5-5    simple tasks (summaries, stances)
+    "medium" CLAUDE_MODEL_MEDIUM  default claude-sonnet-5-5   search + extraction
+    "large"  CLAUDE_MODEL_LARGE   default claude-opus-5-5     actionable reasoning (hypotheses, reviews,
+                                                              graph decisions); CLAUDE_MODEL still works here
+A full model id is passed through unchanged.
 """
 from __future__ import annotations
 
@@ -14,7 +19,9 @@ import anthropic
 
 from graph_store import _load_dotenv
 
-DEFAULT_MODEL = "claude-opus-5-5"
+TIERS = {"small": ("CLAUDE_MODEL_SMALL", "claude-haiku-5-5"),
+         "medium": ("CLAUDE_MODEL_MEDIUM", "claude-sonnet-5-5"),
+         "large": ("CLAUDE_MODEL_LARGE", "claude-opus-5-5")}
 WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 5}
 MAX_CONTINUATIONS = 4
 
@@ -50,10 +57,20 @@ def _client() -> anthropic.Anthropic:
         raise LLMUnavailable(f"no Anthropic credentials: {e}") from e
 
 
-def base_params(effort: str = "medium", model: Optional[str] = None) -> Dict[str, Any]:
+def resolve_model(model: str) -> str:
+    """Tier name -> model id (env override at call time); anything else is already a model id."""
+    if model not in TIERS:
+        return model
+    env, default = TIERS[model]
+    if model == "large":
+        return os.getenv(env) or os.getenv("CLAUDE_MODEL") or default
+    return os.getenv(env) or default
+
+
+def base_params(effort: str, model: str) -> Dict[str, Any]:
     """Shared request params: model, effort, server-side refusal fallback."""
     return dict(
-        model=model or os.getenv("CLAUDE_MODEL", DEFAULT_MODEL),
+        model=resolve_model(model),
         max_tokens=16000,
         output_config={"effort": effort},
         # on a policy decline the API re-runs the request on a fallback model
@@ -67,8 +84,7 @@ def get_client() -> anthropic.Anthropic:
 
 
 def claude_json(prompt: str, schema: Dict[str, Any], *, system: Optional[str] = None,
-                web_search: bool = False, effort: str = "medium",
-                model: Optional[str] = None) -> Dict[str, Any]:
+                web_search: bool = False, effort: str, model: str) -> Dict[str, Any]:
     """Ask Claude for a JSON object matching `schema`.
 
     web_search=True adds the web search server tool; the answer is then parsed from the final

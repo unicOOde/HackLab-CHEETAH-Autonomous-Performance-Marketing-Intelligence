@@ -19,7 +19,6 @@ P2-P4, P6, P7 and A1 need multi-day scans that no watcher reports yet: they are 
 from __future__ import annotations
 
 import json
-import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -32,7 +31,6 @@ from agents.stances import (OBJECT, SUPPORT, Stance, graph_stance, investigator_
                             metric_edges, outage_stance, pacing_stance, side_effects)
 
 AGENT = "product_manager"
-LARGE_MODEL = os.getenv("CLAUDE_MODEL_LARGE", "claude-opus-5-5")
 GATES = ("supported_cause", "fixable", "measured_lever", "positive_impact", "enough_data",
          "experts_agree", "still_relevant")
 MIN_BASE_DAYS, MIN_CONVERSIONS, MIN_Z_FOR_EDGE = 5, 30, 3.0
@@ -424,7 +422,7 @@ class ProductManager:
         try:
             text = claude_json("Write a 3-5 sentence executive summary of this monitoring cycle for a marketing lead. "
                                "Lead with what needs a decision. Use only numbers from the data.\n\n" + context,
-                               schema, effort="medium", model=LARGE_MODEL)["narrative"]
+                               schema, effort="low", model="small")["narrative"]
         except LLMUnavailable:
             return None
         known = {float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", context.replace(",", ""))}

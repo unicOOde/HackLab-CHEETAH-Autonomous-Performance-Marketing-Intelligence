@@ -208,7 +208,7 @@ class GraphOverlooker:
                   f"Current state of the target:\n{_dump(self._target_state(p))}\n\n"
                   "Evidence query results:\n" +
                   "\n".join(f"- {e['query']}\n  -> {e['result']}" for e in evidence))
-        return claude_json(prompt, REVIEW_SCHEMA, system=REVIEW_SYSTEM, effort="high")
+        return claude_json(prompt, REVIEW_SCHEMA, system=REVIEW_SYSTEM, effort="high", model="large")
 
     def _apply(self, p: Dict[str, Any]) -> str:
         s, reason = self.store, p["reasoning"][:500]
@@ -287,7 +287,7 @@ class GraphOverlooker:
     def run(self, focus: Optional[List[str]] = None, trigger: str = "manual") -> OverlookerReport:
         report = OverlookerReport(trigger)
         client = get_client()
-        params = base_params(self.effort)
+        params = base_params(self.effort, "large")
         messages: List[Dict[str, Any]] = [{"role": "user", "content": self._kickoff(focus or [], trigger)}]
 
         for _ in range(self.max_steps):

@@ -49,7 +49,7 @@ OUTAGE_SCHEMA = {
 def claude_search(prompt: str) -> str:
     """search_fn for ExternalOutageCampaignAgent: prompt -> JSON text. Failures become 'unknown'."""
     try:
-        return json.dumps(claude_json(prompt, OUTAGE_SCHEMA, web_search=True))
+        return json.dumps(claude_json(prompt, OUTAGE_SCHEMA, web_search=True, effort="medium", model="medium"))
     except LLMUnavailable as e:
         return json.dumps({"status": "unknown", "summary": f"Not checked: {e}"})
 

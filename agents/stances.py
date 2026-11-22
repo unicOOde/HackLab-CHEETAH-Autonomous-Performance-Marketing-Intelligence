@@ -8,7 +8,6 @@ stance is a small-tier LLM call; without the LLM it abstains as `unknown` (unkno
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
@@ -16,7 +15,6 @@ from typing import Any, Dict, List, Optional, Sequence
 from graph_store import GraphStore
 
 SUPPORT, OBJECT, ABSTAIN = "support", "object", "abstain"
-SMALL_MODEL = os.getenv("CLAUDE_MODEL_SMALL", "claude-haiku-5-5")
 
 # "Bid Multiplier 1.727 vs expected 0.9232 (+87%, z=+6.8)", "CPC €0.79 vs expected €0.51 (+56%, z=+4.9)"
 _MEASURED = re.compile(r"^(?P<metric>[A-Za-z&][A-Za-z &]+?) €?(?P<obs>[\d,.]+) vs expected €?(?P<exp>[\d,.]+) "
@@ -153,7 +151,7 @@ def investigator_stance(item: Dict[str, Any], dossier: Dict[str, Any]) -> Stance
         return Stance(agent, ABSTAIN, f"unknown: {exc}", unknown=True)
     context = json.dumps({"item": item, "dossier": dossier}, default=str)
     try:
-        ans = claude_json(context, INVESTIGATOR_SCHEMA, system=INVESTIGATOR_SYSTEM, effort="low", model=SMALL_MODEL)
+        ans = claude_json(context, INVESTIGATOR_SCHEMA, system=INVESTIGATOR_SYSTEM, effort="low", model="small")
     except LLMUnavailable as exc:
         return Stance(agent, ABSTAIN, f"unknown: LLM unavailable ({str(exc)[:120]})", unknown=True)
     known = set(_numbers(context))

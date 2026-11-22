@@ -253,7 +253,7 @@ class InvestigatorAgent:
         step("reasoning", {})
         try:
             data = claude_json(f"Investigate this target.\n\nContext:\n{json.dumps(ctx, indent=1, default=str)}",
-                               HYPOTHESIS_SCHEMA, system=SYSTEM, effort="high")
+                               HYPOTHESIS_SCHEMA, system=SYSTEM, effort="high", model="large")
         except LLMUnavailable as e:
             inv.dropped.append(f"LLM unavailable: {e}")
             step("dropped", {"reason": f"LLM unavailable: {e}"})

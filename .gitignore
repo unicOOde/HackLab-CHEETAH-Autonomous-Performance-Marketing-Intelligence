@@ -1,6 +1,9 @@
 # Source Data
 data/
 
+backend/cheetah_dev.db*
+data/synthetic/full/raw/journeys.csv
+
 # SQLite
 *.db
 *.db-shm

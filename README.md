@@ -1,110 +1,90 @@
-# HackLab-CHEETAH-Autonomous-Performance-Marketing-Intelligence
-CHEETAH is a fully agentic performance marketing intelligence system that autonomously forecasts revenue, detects anomalies, investigates performance deviations, and delivers actionable insights through coordinated AI agents.
+<div align="center">
 
-# CHEETAH v1.5 — Integration Foundation
+<img src="frontend/assets/cheetah_c_logo.png" alt="CHEETAH" width="120"/>
 
-This package implements the approved FE-01–FE-10 **frontend design changes** and a runnable **backend simulation/event foundation**, while preserving all six original routes and the v1.4 original files outside this package.
+# CHEETAH
 
-## Included
+### Autonomous Performance Marketing Intelligence
 
-- `frontend/CHEETAH_UI_Prototype_v1.5.html`: standalone enhanced UI with October aggregate-first UX, simulation controls, Evidence Reviewer panel, governed-action panel, two replay options, neutral campaign indicators, graph lifecycle legend and SSE/API integration. Original source samples remain explicitly marked as samples when offline — Forecast's event feed, the whole Reports screen (all five tabs), and the live half of Marketplace (tile list + campaign Commission/EPC/Country Revenue) switch to real live data the moment a run is connected; Marketplace's forecast-status pill and Baseline & investigation panel stay hardcoded by design (MVP 2 / Investigator scope).
-- `PRD/Master_PDR_v2.0.pdf`/`.docx`: approved requirements, architecture, service contracts, acceptance cases and implementation limits (supersedes the older `CHEETAH_Product_and_Integration_Spec_v1.5.docx`, no longer in the repo). `PRD/PRD_findings_extension.md` logs decisions settled after it.
-- `backend/app.py`, `models.py`, `core.py`, `worker.py`: FastAPI endpoints, SQLAlchemy models, durable command queue, October source/daily forecast ingestion, daily revenue evaluation, automatic pause, incident records, source-event batches and SSE.
-- `docker-compose.yml`, `Dockerfile`, `.env.example`: local infrastructure for PostgreSQL, API, one worker and Neo4j (Neo4j model itself pending).
-- `tests/test_backend.py`: smoke tests using isolated test-only values, not data included with the product.
+**It watches the marketplace, notices what changed, finds out why, and tells you what to do — before anyone asks.**
 
-## What works now
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![Neo4j](https://img.shields.io/badge/Neo4j-Aura-4581C3?logo=neo4j&logoColor=white)
+![Claude](https://img.shields.io/badge/Claude-Haiku%20·%20Sonnet%20·%20Opus-D97757?logo=anthropic&logoColor=white)
+![TabPFN](https://img.shields.io/badge/Forecasts-TabPFN--TS-7B61FF)
+![Status](https://img.shields.io/badge/HackLab-submission-111111)
 
-1. All six HTML screens render with no observed JS exceptions in Chromium smoke tests.
-2. Persistent run creation, status snapshots, commands, run-specific SSE with event IDs.
-3. Import and validate exactly 31 October daily Amount values under an immutable dataset ID.
-4. Import clicks and installs as independent IDs and stream their per-day batches from the worker.
-5. Import seven-day externally produced forecast outlooks and lock D+1 references (no rewriting).
-6. Compare each finalized aggregate daily Amount to its locked interval; pause on a deviation and emit an aggregate incident.
-7. Show an explicit blocked agent task if investigation credentials/model are absent; no fabricated root-cause/evidence outcomes.
-8. UI displays unavailable/neutral statuses until the necessary integrations are configured.
+</div>
 
-## Not yet operational — dependencies expressly deferred by the product owner
+---
 
-- Actual October 2026 time-series and full click/install records; test data in `tests/` is isolated and never loaded into the UI. A **synthetic** (not real) stand-in dataset is available for demo/dev purposes only — see "Synthetic demo data" below.
-- TabPFN-TS direct inference and interval calibration, because API credentials and historical context were not supplied.
-- Claude Investigator and Evidence Reviewer inference, bounded ReAct and evidence reference tests.
-- Neo4j/MCP model, graph proposal approval and learning commit.
-- Sandbox action effects, guardrails, rollback, causal intervention mechanics.
-- Checkpoint-backed Learning Replay and Fix Validation Replay. The API currently **rejects replay requests** until these adapters exist; frontend buttons accurately surface that state.
-- Production authentication, concurrency hardening and deployment security.
+## ⚡ What it does
 
-~~True intra-day source-event staggering~~ — **now implemented** for the `live_events` ingestion
-mode (see `backend/README.md`'s "Ingestion modes" section): the worker genuinely inserts each
-click/install row as the simulated clock passes its real timestamp, not a per-day batch. The
-original `preloaded_daily` mode (bulk-upload, day-filtered reveal) is unchanged and still the
-default.
+Dashboards wait for someone to look at them. CHEETAH doesn't wait.
 
-## Quick start
+- 🕸️ **Keeps a graph of the business.** Ads, countries, categories, conversion lag and metrics live in Neo4j. Agents extend it as they learn something new.
+- 📈 **Forecasts every day.** Each day gets a TabPFN-TS forecast band, locked the day before so it can't be tuned after the fact.
+- 🚨 **Detects what matters.** A day outside its band opens an incident and pauses the replay.
+- 🔍 **Investigates on its own.** It narrows the deviation to the segment that drove it, reads the graph around it, and has Claude form hypotheses grounded in real numbers.
+- 🧭 **Reports with evidence.** You get what changed, why it probably changed, what is at stake, and ranked actions. These are recommendations only; nothing is executed.
 
-**With Docker:**
-1. Copy `.env.example` to `.env`; set unique local passwords.
-2. `docker compose up --build` from this directory. API/UI at `http://127.0.0.1:8000/`. Neo4j management interface at `localhost:7474` (present for future graph integration, not yet queried by the API).
+> **Honest by design.** When an integration is missing, CHEETAH reports *blocked* or *unknown*. It never invents a plausible-looking answer.
 
-**Without Docker** — needs a **Python 3.10+** venv (`app.py`'s `X | None` type hints fail on 3.9, even with `from __future__ import annotations`; see `backend/README.md`). The repo's `.venv-data` is pinned to 3.9 for `cheetah_synth`, so use a separate one:
-1. One-time setup: `python3.10 -m venv .venv-backend && .venv-backend/bin/pip install -r backend/requirements.txt`
-2. `./start_backend.sh` from the repo root (`chmod +x` it first if needed). This starts both the API (`uvicorn app:app --reload --port 8000`) and the worker (`worker.py` — actually executes queued commands and advances simulations; nothing runs without it) in one terminal, and stops both cleanly on `Ctrl+C`. It also **auto-pushes a fresh live demo run** once the API is reachable (a new timestamped `--dataset-id` every time, so restarts never collide) — open `http://127.0.0.1:8000/` right after and there's already something running; set `SKIP_AUTO_PUSH=1` to skip this and push manually instead (see "Test run" below).
+## 🔁 The loop
 
-Either way, once the server's up you need data loaded before a run can start: either real data (`POST /api/v1/datasets/daily` + `/api/v1/forecasts/outlooks`, 31 October records each — see `backend/README.md`) or the synthetic test run below (already handled automatically by `start_backend.sh` unless you set `SKIP_AUTO_PUSH=1`).
+```mermaid
+flowchart LR
+    D["📊 Data<br/>clicks · conversions"] --> F["📈 Forecast<br/>locked daily band"]
+    F --> X{"🚨 Outside<br/>the band?"}
+    X -- yes --> O["🎯 Orchestrator<br/>finds the driver"]
+    O --> I["🔍 Investigator<br/>graph + Claude"]
+    I --> P["🧭 Product Manager<br/>fix or no fix"]
+    P --> G["🕸️ Graph Engineer<br/>learns & extends"]
+    G -.-> F
+```
 
-## Test run (synthetic demo data, not real data)
+Every step streams live to the **Agentic Monitoring** screen. Click an anomaly to follow the agent through the graph as it works.
 
-A ready-made way to exercise the full pipeline (ingest → daily playback → deviation detection →
-pause/incident → blocked Investigator task) without real data. `data/synthetic/` (generated by
-`src/cheetah_synth/`, see `data/synthetic/README.md`) holds a synthetic click→conversion journey
-dataset calibrated against the real Oct 2026 reports in `data/`; `cheetah_synth` also includes an
-adapter that pushes a generated run straight into this backend's own ingestion endpoints.
+## 🦁 Meet the pack
 
-1. Start the server (see Quick start above) and confirm both the API and the worker are running.
-2. Push the synthetic dataset and start a run, from the repo root — bulk `preloaded_daily` (below)
-   or genuinely live, per-event `live_events` (`start_backend.sh`'s auto-push already does this
-   for you; use a fresh `--dataset-id` either way, they're immutable):
-   ```bash
-   PYTHONPATH=src .venv-data/bin/python -m cheetah_synth.cli push-to-backend \
-     --run-id full --dataset-id synth-full-v1 --start
-   # or, for true live streaming (see backend/README.md's "Ingestion modes" section):
-   PYTHONPATH=src .venv-data/bin/python -m cheetah_synth.cli push-to-backend \
-     --run-id full --dataset-id synth-full-live-v1 --ingestion-mode live_events --start
-   ```
-   The first ingests all 31 daily amounts plus a downsampled ~5,260 click/install source events up
-   front; the second streams every one of the ~3.7M real-shaped click/install rows in live, one
-   small batch per tick, as the simulated clock passes each event's real timestamp. Either way it
-   also pushes a naive placeholder forecast reference per day, creates a run, and queues `start` —
-   prints the new `run_id` when done.
-3. Open `http://127.0.0.1:8000/` in a browser (hard-refresh with Cmd+Shift+R if you'd loaded it
-   before). The UI auto-opens the most recently created run, so this one loads automatically;
-   the KPI tiles should populate and the daily chart should start advancing as the worker ticks
-   through October.
-4. Expect a pause around **Oct 7** — that's where the naive reference band (tuned to flag
-   roughly one day across the month, not tied to any specific injected anomaly) detects a
-   deviation, creating an Incident and a `blocked_configuration` Investigator task (Claude isn't
-   connected, so it can't do more than flag that it's blocked). Send a `resume` command (the UI's
-   toolbar button, or `POST /api/v1/runs/<run_id>/commands {"command":"resume"}`) to let playback
-   continue to day 31.
-5. For a `live_events` run specifically, check the **Reports** screen (all five tabs browse/filter/
-   export real streamed rows — paginated via `GET /runs/{id}/source_events`, with Performance
-   Report's `GET /runs/{id}/performance_report` rollup) and the **Marketplace** tile list/campaign
-   detail page, both of which switch from static samples to this live data automatically once a run
-   is connected.
+| | Agent | Job |
+|---|---|---|
+| 🦒 | **Giraffe** | Simulation clock: replays October 2026 hour by hour |
+| 🦌 | **Impala** | Watches pacing and auctions on paid traffic |
+| 🐦 | **Oxpecker** | Searches the web for outages that hit our ads |
+| 🎯 | **Anomaly Orchestrator** | Finds the segment behind a deviation and routes the incident |
+| 🐺 | **Hyena** | Investigator: hypotheses backed by numbers from the graph |
+| 🐊 | **Croc** | Product manager: decides *fix*, *no fix* or *monitor* through seven gates |
+| 🐃 | **Buffalo** | Graph engineer: onboards new metrics and validates causal edges |
 
-Everything pushed this way is unambiguously marked synthetic in the data itself —
-`source_kind="synthetic"` on daily amounts, `source="synthetic_naive_baseline"` /
-`model_version="naive_trailing_median_v1"` on the forecast references (a deliberately naive
-trailing-median placeholder, **not** a TabPFN forecast — TabPFN isn't connected, per "Not yet
-operational" above) — so nothing from this path could be mistaken for real revenue or a real
-model output. Re-running `push-to-backend` with the same `--dataset-id` fails with `409` (dataset
-IDs are immutable) — pass a new `--dataset-id` for a fresh ingest, or just `POST /api/v1/runs
-{"dataset_id":"synth-full-v1"}` directly to start another run against the already-loaded data.
+## 🚀 Quick start
 
-## Data and metric protection
+```bash
+python3.12 -m venv .venv-backend && .venv-backend/bin/pip install -r backend/requirements.txt
+cp .env.example .env          # add ANTHROPIC_API_KEY, NEO4J_*, optional TABPFN_TOKEN
+./start_backend.sh            # API + worker + a live demo run → http://127.0.0.1:3030
+```
 
-`Amount` is customer net revenue excluding tax, not spend or profit. Source summary aggregates and transaction detail must not be double counted. Preserve Click ID, Transaction ID, Freecash ID, Freecash AdSpace ID and Game Placement ID as strings. Campaign-level forecasting remains explicitly MVP 2.
+Prefer containers? `docker compose up --build` → `http://127.0.0.1:8000`.
 
-## Change control
+## 🎬 The demo
 
-Original `/mnt/data/CHEETAH_UI_Prototype_v1.4(1).html` and `/mnt/data/CHEETAH_Frontend_PDR_v1.4_Data_Naming(1).docx` were left untouched. The v1.5 DOCX is a superseding **integration specification**, not a silent edit of the v1.4 33-page reference PDR. The original PDR remains the design authority for unchanged views and field definitions.
+1. **Inject a fault.** A pacing bug burns the budget by late morning → Impala flags it → Croc proposes the fix.
+2. **Make an innocent change.** A planned promo lifts traffic 1.7×. Impala folds it into its baseline, so no false alarm fires.
+3. **Add a new metric.** Buffalo validates it and finds its place in the graph without being told where.
+
+Revenue anomalies in the replay pause the run and are investigated live. → [Demo guide](docs/70-demo.md)
+
+## 📚 Learn more
+
+| | |
+|---|---|
+| 🗺️ [Technical docs](docs/README.md) | Overview, data, backend, graph, agents, frontend, demo |
+| 🧱 [Principles](docs/principles.md) | The rules that keep the output honest |
+| 📐 [Architecture diagrams](PRD/architecture_diagrams/) | System context, runtime, agent workflow |
+| 🛠️ [Operations](docs/01-operations.md) | Venvs, env vars, tests, health checks |
+
+<div align="center">
+<sub>Built at HackLab with real Freecash affiliate data from October 2026 · English everywhere · Recommendations only, never auto-executed</sub>
+</div>

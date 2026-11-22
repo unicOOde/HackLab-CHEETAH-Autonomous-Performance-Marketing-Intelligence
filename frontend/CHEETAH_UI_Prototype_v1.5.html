@@ -112,7 +112,7 @@
 <section class="section" id="screen-reports">
 <div class="title-line"><div><h1 class="h1">Data &amp; reports</h1><p class="desc">Inspect click events, install conversion transactions, campaign-level totals and their shared time-series feed.</p></div><div class="right-actions"><span class="pill pill-neutral" id="reports-mode-pill">User-provided example rows</span><button class="btn" id="export-button" onclick="exportCurrentCSV()">Export visible CSV ↓</button></div></div>
 <div aria-label="Report views" class="tabs report-tabs" role="tablist"><button class="tab active" data-tab="live" onclick="switchTab('live')">Combined Event Feed</button><button class="tab" data-tab="installs" onclick="switchTab('installs')">Transaction Events</button><button class="tab" data-tab="clicks" onclick="switchTab('clicks')">Click Events</button><button class="tab" data-tab="summary" onclick="switchTab('summary')">Performance Report</button><button class="tab" data-tab="timeseries" onclick="switchTab('timeseries')">Time Series</button></div>
-<div class="filter-toolbar"><label>Campaign <select id="report-campaign-filter" onchange="renderReportsView()"><option value="">All campaigns</option></select></label><label>Country <select id="report-country-filter" onchange="renderReportsView()"><option value="">All countries</option></select></label><label>Event type <select id="report-type-filter" onchange="renderReportsView()"><option value="">All event types</option><option value="click">click</option><option value="install">install</option></select></label><label>Search ID / date <input id="report-search-filter" oninput="renderReportsView()" placeholder="Search rows…" type="search"/></label><button class="btn" onclick="resetReportFilters()">Reset filters</button></div>
+<div class="filter-toolbar"><label>Campaign <select id="report-campaign-filter" onchange="renderReportsView()"><option value="">All campaigns</option></select></label><label>Country <select id="report-country-filter" onchange="renderReportsView()"><option value="">All countries</option></select></label><label>Surface <select id="report-surface-filter" onchange="renderReportsView()"><option value="">All surfaces</option><option value="search">search</option><option value="for_you">for_you</option><option value="recommendations">recommendations</option><option value="category_browse">category_browse</option><option value="home_feed">home_feed</option><option value="sponsored_ads">sponsored_ads</option></select></label><label>Event type <select id="report-type-filter" onchange="renderReportsView()"><option value="">All event types</option><option value="click">click</option><option value="install">install</option></select></label><label>Search ID / date <input id="report-search-filter" oninput="renderReportsView()" placeholder="Search rows…" type="search"/></label><button class="btn" onclick="resetReportFilters()">Reset filters</button></div>
 <div class="card table-card"><div class="table-head"><div><h2 class="section-title" id="report-section-title" style="margin:0 0 4px">Combined Event Feed</h2><div class="fine" id="report-section-subtitle">Click events + install conversions in one time-ordered stream</div></div><span class="pill pill-neutral" id="report-rowcount">9 sample rows · offline</span></div><div class="table-scroll report-scroll" id="report-table-container"></div><div id="report-visual-container" style="display:none"><svg aria-label="Illustrative click and install sample counts by day" class="chartplot" id="timeseries-chart" viewbox="0 0 1040 300"></svg></div><div class="underchart"><span>All timestamps stored/displayed as UTC for source samples; duration is seconds</span><span>Static fixtures · live streaming and one-month history deferred</span></div></div>
 
 <p class="footnote">Click ID ≠ Transaction ID. A shared Game Placement ID alone does not prove click-to-install attribution. The install sample includes a zero Amount with positive Commission and Margin; preserve it as supplied.</p>
@@ -218,7 +218,7 @@ function normalizeDate(s){return String(s||'').replace(' ','T').replace(/Z$/,'')
 function getReportRows(tab=currentTab){if(tab==='installs')return installRows.map(r=>({...r}));if(tab==='clicks')return clickRows.map(r=>({...r}));if(tab==='summary')return summaryRows.map(r=>({...r}));const clicks=clickRows.map(r=>({...r,eventSort:normalizeDate(r.time),eventTime:r.time,eventType:'click',eventId:r.clickId,amount:null,commission:null}));const installs=installRows.map(r=>({...r,eventSort:normalizeDate(r.time),eventTime:r.time,eventType:'install',eventId:r.transactionId}));return clicks.concat(installs).sort((a,b)=>b.eventSort.localeCompare(a.eventSort))}
 function renderReports(){let rows=getReportRows(),cmp=document.getElementById('report-campaign-filter').value,country=document.getElementById('report-country-filter').value,etype=document.getElementById('report-type-filter').value,q=document.getElementById('report-search-filter').value.toLowerCase().trim();rows=rows.filter(r=>(!cmp||r.gamePlacementId===cmp)&&(!country||r.country===country)&&(!etype||(r.eventType||r.transactionType)===etype)&&(!q||Object.values(r).some(v=>String(v??'').toLowerCase().includes(q))));let {key,desc}=reportSort;if(currentTab!=='timeseries')rows.sort((a,b)=>{let A=a[key],B=b[key];if(typeof A==='number'&&typeof B==='number')return desc?B-A:A-B;return desc?String(B??'').localeCompare(String(A??'')):String(A??'').localeCompare(String(B??''))});currentFiltered=rows;document.getElementById('report-rowcount').textContent=`${rows.length} sample rows · offline`;if(currentTab==='timeseries'){plotTimeSeries(rows);return}let def=reportDefs[currentTab],numericKeys=['amount','commission','payout','margin','transactionCount'],head='<thead><tr>'+def.columns.map(([k,l])=>`<th onclick="sortReport('${k}')" aria-sort="${reportSort.key===k?(reportSort.desc?'descending':'ascending'):'none'}" class="${numericKeys.includes(k)?'num':''}">${escapeHTML(l)}</th>`).join('')+'</tr></thead>';let body='<tbody>'+rows.map(r=>'<tr>'+def.columns.map(([k])=>{let v=r[k],numeric=numericKeys.includes(k),html=(v===null||v===undefined||v==='')?'—':(k==='eventType'||k==='transactionType'?`<span class="event-tag ${escapeHTML(v)}">${escapeHTML(v)}</span>`:numeric&&k!=='transactionCount'?fmtEUR(v):k==='transactionCount'?num(v):escapeHTML(v));return `<td class="${numeric?'num':''} ${['eventId','clickId','transactionId','gamePlacementId'].includes(k)?'primary':''}" title="${escapeHTML(v??'No supplied value')}">${html}</td>`}).join('')+'</tr>').join('')+'</tbody>';document.getElementById('report-table-container').innerHTML='<table class="big-table">'+head+body+'</table>'}
 function sortReport(k){reportSort={key:k,desc:reportSort.key===k?!reportSort.desc:false};renderReports()}
-function resetReportFilters(){for(const id of ['report-campaign-filter','report-country-filter','report-type-filter','report-search-filter'])document.getElementById(id).value='';renderReportsView()}
+function resetReportFilters(){for(const id of ['report-campaign-filter','report-country-filter','report-surface-filter','report-type-filter','report-search-filter'])document.getElementById(id).value='';renderReportsView()}
 let __reportsViewDebounce=null;
 function renderReportsView(immediate){
  clearTimeout(__reportsViewDebounce);
@@ -368,6 +368,7 @@ function reportsFilterParams(){
  if(kind)p.kind=kind;
  const cmp=val('report-campaign-filter');if(cmp)p.game_placement_id=cmp;
  const country=val('report-country-filter');if(country)p.country=country;
+ const surface=val('report-surface-filter');if(surface)p.surface=surface;
  const q=val('report-search-filter');if(q)p.q=q;
  return p;
 }
@@ -390,7 +391,7 @@ function reportsRefreshFromTop(){reportsFetchPage(true)}
 
 function renderReportsLiveTable(){
  const container=$('report-table-container');if(!container)return;
- const allCols=[['event_time_utc','Event time (UTC)'],['kind','Event'],['source_id','Click ID / Transaction ID'],['game_placement_id','Game Placement ID'],['country','Country'],['vertical','Vertical'],['category','Category'],['amount','Amount'],['commission','Commission']];
+ const allCols=[['event_time_utc','Event time (UTC)'],['kind','Event'],['source_id','Click ID / Transaction ID'],['game_placement_id','Game Placement ID'],['country','Country'],['surface','Surface'],['vertical','Vertical'],['category','Category'],['amount','Amount'],['commission','Commission']];
  const cols=currentTab==='clicks'?allCols.filter(([k])=>!['amount','commission'].includes(k)):allCols;
  const numeric=k=>k==='amount'||k==='commission';
  const head='<thead><tr>'+cols.map(([k,l])=>`<th class="${numeric(k)?'num':''}">${esc(l)}</th>`).join('')+'</tr></thead>';
@@ -547,7 +548,7 @@ function adapt(){document.title='CHEETAH — Frontend UI Prototype v1.5 · Integ
  first(perf,'.live-activity').classList.add('v15-hide-legacy');first(perf,'.footnote').textContent='Original October source sample totals remain visible only when no run is selected. One-month synthetic/historical records and live forecast inputs have not been supplied.';
  // FE-03/04/05/07/10: keep Kanban and dual graph structure, add independent evidence/action/replay UI.
  const mon=$('screen-incidents');first(mon,'.desc').textContent='Aggregate Amount incidents · autonomous investigation · evidence verification · governed corrective actions and replay.';
- first(mon,'.right-actions').innerHTML='<span class="pill pill-outline">October 2026 · aggregate</span><span class="pill pill-neutral">Data/agents pending</span>';
+ first(mon,'.right-actions').innerHTML='<span class="pill pill-outline">October 2026 · aggregate</span><span class="pill pill-teal">Live agents</span>';
  first(mon,'.agent-monitoring .row-between .pill').textContent='Connection-specific statuses';
  const agentItems=mon.querySelectorAll('.agent-monitoring .agent-item');agentItems[0].querySelector('.agent-sub').textContent='TabPFN-TS seven-day forecast · connection pending';agentItems[0].querySelector('.pill').textContent='Not configured';agentItems[1].querySelector('.agent-sub').textContent='Aggregate daily Amount vs locked D−1 reference';agentItems[1].querySelector('.pill').textContent='Awaiting data';
  const agentCard=first(mon,'.agent-monitoring');for(const [name,role] of [['Investigator Agent','Claude · known graph paths + bounded ReAct'],['Evidence Reviewer Agent','Independent evidence and causal-hypothesis assessment'],['Fix Action Agent','Governed sandbox intervention and rollback']])agentCard.append(newElement(`<div class="agent-item"><div><div class="agent-name">${name}</div><div class="agent-sub">${role}</div></div><span class="pill pill-neutral">Not configured</span></div>`));
@@ -580,4 +581,195 @@ function adapt(){document.title='CHEETAH — Frontend UI Prototype v1.5 · Integ
 async function requestReplay(kind){if(!state.run)return showToast('Create and complete a relevant simulation run before requesting replay.');try{await api('/runs/'+state.run.run_id+'/replays',{method:'POST',body:JSON.stringify({type:kind})})}catch(e){showToast(kind+' replay unavailable: '+e.message)}}
 adapt();init();
 })();
-</script></body></html>
+</script>
+<style id="cheetah-agents-css">
+.ag-root{padding:18px 20px}.ag-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.ag-head .ag-pills{display:flex;gap:7px;flex-wrap:wrap;margin-top:6px}.ag-head .ag-pills .pill{margin-left:0}
+.ag-clock{display:flex;align-items:center;gap:7px;flex-wrap:wrap;background:#f7f9fb;border:1px solid #e8eef3;border-radius:11px;padding:9px 11px}
+.ag-clock b{font-size:13px;font-variant-numeric:tabular-nums}.ag-clock small{font-size:10px;color:#7f8e9d;text-transform:uppercase;letter-spacing:.8px;font-weight:760}
+.ag-clock input{height:31px;border:1px solid #d8e2e9;border-radius:8px;padding:4px 8px;font-size:11px;color:#3f5366}
+.ag-sub{font-size:10px;font-weight:780;letter-spacing:1px;text-transform:uppercase;color:#8898a5;margin:16px 0 9px}
+.ag-flow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.ag-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.ag-card{border:1px solid #e3eaf0;border-radius:12px;padding:12px 13px;background:#fff;display:flex;flex-direction:column;gap:7px;min-width:0;position:relative}
+.ag-card.h-running{border-color:#9cbbe8;box-shadow:0 0 0 3px #eaf1fc}.ag-card.h-down{border-color:#e8b4ba}.ag-card.h-degraded{border-color:#ecd09f}
+.ag-top{display:flex;align-items:center;gap:10px}.ag-avatar{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;color:#fff;flex:none;background:#8a99a7}
+.ag-card.h-active .ag-avatar{background:#168a81}.ag-card.h-running .ag-avatar{background:#4273c0;animation:ag-pulse 1.2s ease-in-out infinite}.ag-card.h-degraded .ag-avatar{background:#bd771a}.ag-card.h-down .ag-avatar{background:#b44c58}
+@keyframes ag-pulse{0%,100%{box-shadow:0 0 0 0 #4273c055}50%{box-shadow:0 0 0 6px #4273c000}}
+.ag-name{font-weight:780;font-size:14px;line-height:1.1}.ag-role{font-size:11px;color:#7b8b99;margin-top:2px}.ag-top .pill{margin-left:auto;flex:none}
+.ag-reason{font-size:11px;color:#3f5366;line-height:1.45;overflow-wrap:anywhere;min-height:16px}
+.ag-meta{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:10px;color:#7f8e9d}.ag-meta b{color:#4a5f71;font-weight:700}
+.ag-actions{display:flex;gap:6px;margin-top:2px}.ag-actions .btn{padding:6px 9px;font-size:10px;background:#fff}
+.ag-card .ag-step{position:absolute;top:-8px;left:12px;background:#fff;border:1px solid #e3eaf0;border-radius:20px;font-size:9px;font-weight:780;color:#7f8e9d;padding:1px 7px;letter-spacing:.5px}
+.ag-runs{border-top:1px solid #edf2f6;padding-top:7px;font-size:10px;color:#5a6e80;max-height:190px;overflow:auto}
+.ag-runs div{display:grid;grid-template-columns:62px 58px 1fr;gap:6px;padding:3px 0;border-bottom:1px dashed #eef2f5}.ag-runs .r-failed{color:#a54750}.ag-runs .r-degraded{color:#a66d1b}
+.ag-small{font-size:10px;padding:5px 8px}
+.ag-two{display:grid;grid-template-columns:1.15fr 1fr;gap:16px;margin-top:16px}
+.ag-feed{max-height:420px;overflow:auto}.ag-msg{display:grid;grid-template-columns:58px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid #eef2f5;font-size:11px}
+.ag-msg time{color:#8b99a6;font-variant-numeric:tabular-nums}.ag-msg .who{font-weight:740;color:#2b4557}.ag-msg .who i{font-style:normal;color:#8b99a6;font-weight:500}
+.ag-msg .what{color:#5a6e80;margin-top:2px;overflow-wrap:anywhere}.ag-type{display:inline-block;border-radius:5px;padding:1px 6px;font-size:9px;font-weight:780;letter-spacing:.4px;text-transform:uppercase;background:#eef2f6;color:#5d7083;margin-left:5px}
+.ag-type.t-report{background:#e7f5f2;color:#09776c}.ag-type.t-investigate{background:#eaf1fc;color:#3868ad}.ag-type.t-event{background:#f2effa;color:#6d61a8}.ag-type.t-fix_feedback,.ag-type.t-decision{background:#fff4e5;color:#a66d1b}
+.ag-tabs{display:flex;gap:6px;margin-bottom:10px}.ag-tabs button{border:1px solid #dfe7ef;background:#fff;border-radius:20px;padding:5px 11px;font-size:11px;font-weight:720;color:#5a6e80}.ag-tabs button.on{background:#122335;color:#fff;border-color:#122335}
+.ag-empty{border:1px dashed #d9e2ea;border-radius:10px;padding:16px;font-size:11px;color:#7b8b99;line-height:1.5}
+.ag-item{border:1px solid #e6edf2;border-radius:10px;padding:10px 12px;margin-bottom:8px;font-size:11px;color:#3f5366}.ag-item h4{margin:0 0 5px;font-size:12px}
+.ag-item textarea{width:100%;border:1px solid #d8e2e9;border-radius:8px;padding:6px 8px;font:inherit;font-size:11px;margin:7px 0 6px;min-height:34px}
+.ag-item details{margin-top:6px}.ag-item summary{cursor:pointer;font-size:10px;font-weight:760;color:#5a6e80}.ag-item ul,.ag-item ol{margin:5px 0 0;padding-left:17px}.ag-item li{margin:3px 0}
+#ag-metric input,#ag-metric select{width:100%;height:30px;border:1px solid #d8e2e9;border-radius:8px;padding:4px 8px;font:inherit;font-size:11px;margin:6px 0 0}#ag-metric select{width:auto}
+.o-resolved{background:#e3f5f0;color:#09776c}.o-applied{background:#e3f5f0;color:#09776c}
+.ag-outcome{display:inline-block;border-radius:5px;padding:1px 7px;font-size:9px;font-weight:800;letter-spacing:.4px;text-transform:uppercase}
+.o-fix_proposed{background:#e3f5f0;color:#09776c}.o-no_fix{background:#e9edf2;color:#596a7a}.o-graph_only{background:#f2effa;color:#6d61a8}.o-monitor{background:#fff4e5;color:#a66d1b}
+@media(max-width:1300px){.ag-flow{grid-template-columns:repeat(2,minmax(0,1fr))}.ag-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:900px){.ag-flow,.ag-grid,.ag-two{grid-template-columns:1fr}}
+</style>
+<script id="cheetah-agents">
+// Live agent overview on the Agentic Monitoring screen. Reads /api/v1/agents/* only; the backend
+// never fakes state (unconfigured agents say so), and nothing here executes a fix.
+(function(){
+'use strict';
+const base=(window.CHEETAH_API_BASE||'/api/v1').replace(/\/$/,'');
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const PIPELINE=['sim_clock','pacing_watcher','outage_agent','investigator','product_manager','graph_engineer'];
+const HEALTH={running:['pill-blue','Running'],active:['pill-teal','Active'],degraded:['pill-amber','Degraded'],down:['pill-rose','Down'],
+  never_run:['pill-neutral','Waiting'],not_configured:['pill-neutral','Not configured'],disabled:['pill-neutral','Disabled']};
+const st={status:null,open:new Set(),runs:{},tab:'briefs',out:{briefs:[],discussions:[],fixes:[],decisions:[]},openItems:new Set(),feed:[],offline:false};
+async function api(path,opts={}){const r=await fetch(base+path,{...opts,headers:{'Content-Type':'application/json',...(opts.headers||{})}});
+  const b=await r.json().catch(()=>({detail:r.statusText}));if(!r.ok)throw Error(typeof b.detail==='string'?b.detail:JSON.stringify(b.detail||b));return b}
+function rel(ts){if(!ts)return '—';const s=(Date.parse(ts)-Date.now())/1000,a=Math.abs(s);
+  const t=a<60?Math.round(a)+'s':a<3600?Math.round(a/60)+'m':a<86400?Math.round(a/3600)+'h':Math.round(a/86400)+'d';return s<0?t+' ago':'in '+t}
+function hhmm(ts){return ts?new Date(ts).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—'}
+function toast(m){const el=document.createElement('div');el.className='v15-note';el.style.cssText='position:fixed;bottom:18px;right:18px;z-index:999;max-width:440px;box-shadow:0 5px 19px #12233522';el.textContent=m;document.body.appendChild(el);setTimeout(()=>el.remove(),5000)}
+
+function mount(){
+  const mon=$('screen-incidents'),card=mon&&mon.querySelector('.agent-monitoring');if(!card)return false;
+  card.classList.add('ag-root');
+  card.innerHTML=`<div class="ag-head"><div><h2 class="section-title" style="margin:0">Agents</h2>
+     <div class="ag-pills" id="ag-pills"><span class="pill pill-neutral">Connecting…</span></div></div>
+   <div class="ag-clock"><div><small>Simulated time</small><br><b id="ag-clock-now">—</b></div>
+     <button class="btn accent ag-small" id="ag-advance" title="Advance the October clock one hour; the pipeline follows">▸ Advance 1h</button>
+     <input type="datetime-local" id="ag-jump" step="3600" aria-label="Jump simulated clock to hour"><button class="btn ag-small" id="ag-jump-go">Jump</button></div></div>
+   <div class="ag-sub">Monitoring pipeline · every 30 min, on events, or on demand</div><div class="ag-flow" id="ag-flow"></div>
+   <div class="ag-sub">Simulation services · run inside the backend worker loop</div><div class="ag-grid" id="ag-tracka"></div>`;
+  card.after(Object.assign(document.createElement('div'),{className:'ag-two',innerHTML:
+   `<div class="card ag-root"><div class="row-between"><h2 class="section-title" style="margin:0">Agent conversation</h2><span class="fine">messages &amp; events between agents</span></div><div class="ag-feed" id="ag-feed"></div></div>
+    <div class="card ag-root"><div class="row-between"><h2 class="section-title" style="margin:0">Outcomes</h2><span class="fine">recommendations only · nothing is executed</span></div>
+     <div class="ag-tabs" id="ag-tabs"><button data-t="briefs">Briefs</button><button data-t="discussions">Discussions</button><button data-t="fixes">Fixes</button><button data-t="decisions">Graph decisions</button><button data-t="metric">+ Metric</button></div><div id="ag-out"></div>
+     <form id="ag-metric" class="ag-item" hidden><h4>Submit a metric</h4><div class="fine">Name and define it. Cartographer validates it on the graph and finds its place; you never specify edges.</div>
+      <input name="id" placeholder="Name, e.g. ROAS" required maxlength="80"><input name="definition" placeholder="Definition, e.g. revenue per euro of ad spend" required maxlength="500">
+      <div style="display:flex;gap:6px"><input name="cypher_value" placeholder="Value over sums, e.g. revenue / spend" required maxlength="300" style="flex:1">
+      <select name="unit"><option>ratio</option><option>x</option><option>EUR</option><option>count</option><option>seconds</option></select></div>
+      <textarea name="source_query" placeholder="Optional read-only Cypher returning sums per slice. Leave empty for paid telemetry columns: auctions, impressions, clicks, spend, conversions, revenue"></textarea>
+      <button class="btn accent ag-small" type="submit">Submit to Cartographer</button></form></div>`}));
+  $('ag-advance').onclick=()=>trigger('sim_clock',{reason:'dashboard: advance 1h'});
+  $('ag-jump-go').onclick=()=>{const v=$('ag-jump').value;if(!v)return toast('Pick an hour first');trigger('sim_clock',{reason:'dashboard: jump',payload:{set:v.slice(0,13)+':00'}})};
+  $('ag-tabs').onclick=e=>{const t=e.target.dataset.t;if(t){st.tab=t;renderOut()}};
+  $('ag-metric').onsubmit=async e=>{e.preventDefault();const f=Object.fromEntries(new FormData(e.target));if(!f.source_query)delete f.source_query;
+    try{await api('/agents/metrics',{method:'POST',body:JSON.stringify(f)});toast('Sent to '+nameOf('graph_engineer')+': '+f.id+'. Its decision appears under Graph decisions.');e.target.reset();setTimeout(refreshFeed,2500)}catch(err){toast('Submission refused: '+err.message)}};
+  $('ag-out').addEventListener('toggle',e=>{const id=e.target.dataset&&e.target.dataset.id;if(id)e.target.open?st.openItems.add(id):st.openItems.delete(id)},true);
+  card.addEventListener('click',onCardClick);$('ag-out').addEventListener('click',onOutClick);
+  return true;
+}
+async function trigger(agent,body){try{await api('/agents/'+agent+'/trigger',{method:'POST',body:JSON.stringify(body||{reason:'dashboard'})});
+  toast('Queued: '+(nameOf(agent))+' will start within a second');setTimeout(refreshStatus,1200);setTimeout(refreshFeed,2500)}catch(e){toast('Could not trigger: '+e.message)}}
+function nameOf(id){return (st.status?.agents||[]).find(a=>a.agent===id)?.name||id}
+
+function agentCard(a,step){
+  const s=a.status||{},[cls,label]=HEALTH[a.health]||['pill-neutral',a.health];
+  const canRun=a.track==='B'&&!['not_configured','disabled','running'].includes(a.health);
+  const last=s.finished_at?`<span>Last <b>${esc(rel(s.finished_at))}</b> · ${esc(s.last_result||'')}</span>`:'';
+  const next=a.track!=='B'?'':s.next_run_at?`<span>Next <b>${esc(rel(s.next_run_at))}</b></span>`:`<span>Runs <b>${esc((a.triggers||[]).filter(t=>t!=='manual').join(', ')||'manually')}</b></span>`;
+  const inbox=a.track==='B'?`<span>Inbox <b>${a.inbox??0}</b></span>`:'';
+  const open=st.open.has(a.agent);
+  return `<div class="ag-card h-${esc(a.health)}" data-agent="${esc(a.agent)}">${step?`<span class="ag-step">${step}</span>`:''}
+   <div class="ag-top"><div class="ag-avatar">${esc((a.name||'?')[0])}</div><div style="min-width:0"><div class="ag-name">${esc(a.name)}</div><div class="ag-role">${esc(a.role||'')}</div></div><span class="pill ${cls}">${label}</span></div>
+   <div class="ag-reason" title="${esc(a.description||'')}">${esc(s.last_summary&&a.health!=='not_configured'&&a.health!=='down'?s.last_summary:a.reason)}</div>
+   ${a.track==='B'?`<div class="ag-meta">${last}${next}${inbox}</div>
+   <div class="ag-actions"><button class="btn" data-act="run" ${canRun?'':'disabled'}>▶ Run now</button><button class="btn" data-act="hist">${open?'Hide runs':'Runs'}</button></div>
+   ${open?`<div class="ag-runs" id="ag-runs-${esc(a.agent)}">${runsHtml(a.agent)}</div>`:''}`:''}</div>`;
+}
+function runsHtml(agent){const rs=st.runs[agent];if(!rs)return 'Loading…';if(!rs.length)return 'No runs yet.';
+  return rs.map(r=>`<div class="r-${esc(r.result)}"><span>${esc(hhmm(r.started_at))}</span><span>${esc(r.result)} · ${Number(r.duration_s||0).toFixed(1)}s</span><span title="${esc((r.trigger?.kinds||[]).join(', '))}">${esc(r.error||r.summary||'—')}</span></div>`).join('')}
+async function onCardClick(e){const btn=e.target.closest('button[data-act]');if(!btn)return;const agent=btn.closest('[data-agent]').dataset.agent;
+  if(btn.dataset.act==='run')return trigger(agent,{reason:'dashboard: run now'});
+  if(st.open.has(agent)){st.open.delete(agent);return renderStatus()}st.open.add(agent);renderStatus();
+  try{st.runs[agent]=(await api('/agents/'+agent+'/runs?limit=15')).runs}catch(e){st.runs[agent]=[]}renderStatus()}
+
+function renderStatus(){
+  const b=st.status,pills=$('ag-pills');if(!pills)return;
+  if(st.offline||!b){pills.innerHTML='<span class="pill pill-rose">Backend unavailable</span>';$('ag-flow').innerHTML='<div class="ag-empty">The agent API is not reachable. Start the backend (uvicorn + worker.py) to see live agents.</div>';$('ag-tracka').innerHTML='';return}
+  if(b.status==='not_configured'){pills.innerHTML='<span class="pill pill-neutral">Agent bus not set up</span>';$('ag-flow').innerHTML=`<div class="ag-empty">${esc(b.reason)} — it is created when the worker starts.</div>`;$('ag-tracka').innerHTML='';return}
+  const sch=b.scheduler||{},running=b.agents.filter(a=>a.health==='running').length;
+  pills.innerHTML=(sch.alive?`<span class="pill pill-teal">Scheduler alive</span>`:`<span class="pill pill-rose">Scheduler not running</span>`)
+    +`<span class="pill pill-outline">${running} running now</span>`+(sch.time_scale&&sch.time_scale!==1?`<span class="pill pill-amber">Time ×${sch.time_scale}</span>`:'');
+  const c=b.sim_clock;$('ag-clock-now').textContent=c?.now?c.now.replace('T',' · '):'not started';
+  const j=$('ag-jump');if(c?.start&&!j.min){j.min=c.start;j.max=c.end;j.value=c.now||c.start}
+  $('ag-advance').disabled=!sch.alive;
+  const byId=Object.fromEntries(b.agents.map(a=>[a.agent,a]));
+  $('ag-flow').innerHTML=PIPELINE.filter(id=>byId[id]).map((id,i)=>agentCard(byId[id],String(i+1))).join('');
+  $('ag-tracka').innerHTML=b.agents.filter(a=>a.track==='A').map(a=>agentCard(a)).join('');
+}
+async function refreshStatus(){try{st.status=await api('/agents/status');st.offline=false}catch(e){st.offline=true}renderStatus()}
+
+function preview(m){const p=m.payload||{};
+  if(m.kind==='event')return esc(m.name)+(p.now?' · '+esc(p.now):'')+(p.date?' · '+esc(p.date):'');
+  if(p.change)return `${esc(p.change)} · ${esc(p.issue_key||'')}${p.pct_change!=null?' · '+(p.pct_change*100).toFixed(0)+'% vs expected':''}`;
+  if(m.type==='investigate')return 'targets '+esc((p.targets||[]).map(t=>t.join(':')).join(', '))+(p.reason?' · '+esc(p.reason):'');
+  if(p.target)return esc(p.target.join(':'))+' · '+(p.error?esc(p.error):(p.hypotheses||[]).length+' hypothesis(es)');
+  if(m.type==='cycle_summary')return `${(p.ongoing||[]).length} ongoing · ${(p.explained||[]).length} explained`;
+  if(p.service)return `${esc(p.service)} ${esc(p.severity||'')} · ${(p.countries||[]).length} countries`;
+  if(m.type==='proposal')return `validate ${esc(p.src||'')} → ${esc(p.dst||'')} · ${esc(p.issue_key||'')}`;
+  if(m.type==='decision')return `<b>${esc(p.outcome)}</b> · ${esc(p.target||'')}${p.reason?' · '+esc(String(p.reason).slice(0,140)):''}`;
+  if(m.type==='metric_submission')return `metric ${esc(p.id)} = ${esc(p.cypher_value)}`;
+  if(m.type==='fix_feedback')return `${esc(p.fix_id)} ${esc(p.decision)}${p.reason?' · '+esc(p.reason):''}`;
+  return esc(JSON.stringify(p).slice(0,120))}
+function renderFeed(){const el=$('ag-feed');if(!el)return;
+  if(!st.feed.length){el.innerHTML='<div class="ag-empty">No messages yet. Press “Advance 1h” to start a monitoring cycle.</div>';return}
+  el.innerHTML=st.feed.map(m=>m.kind==='event'
+   ?`<div class="ag-msg"><time>${esc(hhmm(m.ts))}</time><div><div class="who">${esc(nameOf(m.source))} <i>announced</i><span class="ag-type t-event">event</span></div><div class="what">${preview(m)}</div></div></div>`
+   :`<div class="ag-msg"><time>${esc(hhmm(m.ts))}</time><div><div class="who">${esc(nameOf(m.from))} <i>→</i> ${esc(nameOf(m.to))}<span class="ag-type t-${esc(m.type)}">${esc(m.type.replace('_',' '))}</span>${m.delivery==='inbox'?'<span class="ag-type">unread</span>':''}${m.delivery==='dead'?'<span class="ag-type t-decision">dead letter</span>':''}</div><div class="what">${preview(m)}</div></div></div>`).join('')}
+const pill=o=>`<span class="ag-outcome o-${esc(o)}">${esc(String(o||'').replace('_',' '))}</span>`;
+const det=(id,summary,body)=>`<details data-id="${esc(id)}" ${st.openItems.has(id)?'open':''}><summary>${summary}</summary>${body}</details>`;
+const stanceList=ss=>(ss||[]).map(s=>`<li><b>${esc(nameOf(s.agent))}</b> <span class="ag-type t-${s.stance==='object'?'decision':s.stance==='support'?'report':'event'}">${esc(s.stance)}</span> ${esc(s.argument)}</li>`).join('');
+function renderOut(){const el=$('ag-out');if(!el)return;
+  document.querySelectorAll('#ag-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===st.tab));
+  $('ag-metric').hidden=st.tab!=='metric';if(st.tab==='metric'){el.innerHTML='';return}
+  const rows=st.out[st.tab]||[],owner=(st.status?.agents||[]).find(a=>a.agent===(st.tab==='decisions'?'graph_engineer':'product_manager'));
+  if(!rows.length){el.innerHTML=`<div class="ag-empty">No ${st.tab==='decisions'?'graph decisions':st.tab} yet. ${owner&&owner.health==='not_configured'?esc(owner.name)+' writes these and is not configured: '+esc(owner.reason)+'.':'They appear after '+esc(owner?owner.name:'the agent')+'’s next run.'}${st.tab==='discussions'?' Most issues are expected to end with “no fix”, and that is shown here too.':''}</div>`;return}
+  if(st.tab==='briefs')el.innerHTML=rows.map(r=>`<div class="ag-item"><h4>${esc(nameOf('product_manager'))} · sim ${esc((r.sim_now||r.cycle_id||'').replace('T',' '))}</h4>
+     ${r.narrative?`<p>${esc(r.narrative)}</p>`:''}<div>${esc(r.summary||'')}</div>
+     ${(r.recommended_actions||[]).length?`<div class="fine" style="margin-top:6px"><b>Ranked recommended actions</b></div><ol>${r.recommended_actions.map(a=>`<li>${esc(a.playbook)} · ${esc(a.action)} · ${esc(a.expected_impact.low)}..${esc(a.expected_impact.high)} ${esc(a.expected_impact.unit)}${a.data_side==='simulated'?' (simulated data)':''}</li>`).join('')}</ol>`:''}
+     ${det('b'+r.brief_id,'Issues, investigations, uncertainties',`<ul>${(r.issues||[]).map(i=>`<li>${pill(i.outcome)} ${esc(i.what_changed)}${i.reason?' · '+esc(i.reason):''}${(i.impact||[]).length?'<br><span class="fine">'+esc(i.impact.join(' · '))+'</span>':''}</li>`).join('')}
+       ${(r.resolved||[]).map(k=>`<li>${pill('resolved')} ${esc(k)}</li>`).join('')}${(r.graph_decisions||[]).map(g=>`<li>${pill(g.outcome)} graph: ${esc(g.target)}</li>`).join('')}</ul>
+       ${(r.uncertainties||[]).length?`<div class="fine">Uncertain: ${esc(r.uncertainties.join(' · '))}</div>`:''}`)}</div>`).join('');
+  if(st.tab==='discussions')el.innerHTML=rows.map(r=>`<div class="ag-item"><h4>${pill(r.outcome)}${r.reason?` <span class="fine">${esc(r.reason.replace('_',' '))}</span>`:''} ${esc(r.issue_key||'')}</h4>
+     <div>${esc(r.summary||'')}</div>
+     ${det(r.discussion_id,'Transcript: frame, stances, gates',`<div class="fine"><b>What changed:</b> ${esc(r.frame?.what_changed||'')}<br><b>Leading cause:</b> ${esc(r.frame?.cause||'—')}${r.frame?.cause_confidence!=null?' ('+esc(r.frame.cause_confidence)+')':''}${(r.candidates||[]).length?'<br><b>Candidate fix:</b> '+esc(r.candidates.join(', ')):''}</div>
+       ${(r.stances||[]).length?`<ul>${stanceList(r.stances)}</ul>`:''}
+       ${Object.keys(r.gates||{}).length?`<ul>${Object.entries(r.gates).map(([n,g])=>`<li>${g.pass?'✓':'✗'} <b>${esc(n.replace('_',' '))}</b> ${esc(g.detail)}</li>`).join('')}</ul>`:''}`)}</div>`).join('');
+  if(st.tab==='decisions')el.innerHTML=rows.map(r=>`<div class="ag-item"><h4>${pill(r.outcome==='applied'?'fix_proposed':r.outcome==='deferred'?'monitor':'no_fix')} ${esc(r.outcome)} · ${esc(r.kind)} · ${esc(r.target)}</h4>
+     <div>${esc(r.reason||'')}</div>
+     ${det(r.decision_id,'Checks, stances, links',`<ul>${(r.checks||[]).map(c=>`<li>${c.pass?'✓':'✗'} <b>${esc(c.check)}</b> ${esc(c.detail)}</li>`).join('')}${stanceList(r.stances)}
+       ${(r.links||[]).map(l=>`<li>${esc(l.rel)} ${esc(l.src)} → ${esc(l.dst)} ${l.formula?esc(l.formula):''}${l.r!=null?' r='+esc(l.r):''}${l.rejected?' (not written)':''}</li>`).join('')}</ul>
+       ${(r.uncertainties||[]).length?`<div class="fine">${esc(r.uncertainties.join(' · '))}</div>`:''}${(r.change_ids||[]).length?`<div class="fine">Undoable changes: ${esc(r.change_ids.join(', '))}</div>`:''}`)}</div>`).join('');
+  if(st.tab==='fixes')el.innerHTML=rows.map(r=>`<div class="ag-item" data-fix="${esc(r.fix_id)}"><h4>${esc(r.playbook||'')} · ${esc(r.action||r.fix_id)}</h4>
+     <div>${r.expected_impact?`Expected ${esc(r.expected_impact.metric)} ${esc(r.expected_impact.low)}..${esc(r.expected_impact.high)} ${esc(r.expected_impact.unit||'')} ${esc(r.expected_impact.horizon||'')}`:''} · <b>${esc(r.status)}</b>${r.data_side==='simulated'?' · simulated data':''}</div>
+     ${(r.side_effects||[]).length?`<div class="fine">Side effects: ${esc(r.side_effects.join('; '))}</div>`:''}
+     ${det('f'+r.fix_id,'Evidence',`<ul>${(r.evidence||[]).map(e=>`<li>${esc(e)}</li>`).join('')}</ul>`)}
+     ${r.feedback?`<div class="fine">Human: ${esc(r.feedback.decision)}${r.feedback.reason?' — '+esc(r.feedback.reason):''}</div>`:`<textarea placeholder="Reason (optional for accept, recommended for reject)"></textarea><button class="btn accent ag-small" data-fb="accepted">Accept</button> <button class="btn ag-small" data-fb="rejected">Reject</button>`}</div>`).join('')}
+async function onOutClick(e){const b=e.target.closest('button[data-fb]');if(!b)return;const item=b.closest('[data-fix]');
+  try{await api('/agents/fixes/'+encodeURIComponent(item.dataset.fix)+'/feedback',{method:'POST',body:JSON.stringify({decision:b.dataset.fb,reason:item.querySelector('textarea').value})});toast('Feedback sent to '+nameOf('product_manager'));refreshFeed()}catch(err){toast('Feedback failed: '+err.message)}}
+async function refreshFeed(){try{
+  const [m,ev,br,di,fx,de]=await Promise.all([api('/agents/messages?limit=60'),api('/agents/events?limit=30'),api('/agents/briefs?limit=5'),api('/agents/discussions?limit=30'),api('/agents/fixes?limit=30'),api('/agents/decisions?limit=30')]);
+  st.feed=[...m.messages.map(x=>({...x,kind:'message'})),...ev.events.map(x=>({...x,kind:'event'}))].sort((a,b)=>String(b.ts).localeCompare(String(a.ts))).slice(0,60);
+  st.out={briefs:br.briefs,discussions:di.discussions,fixes:fx.fixes,decisions:de.decisions}}catch(e){}
+  renderFeed();if(!$('ag-out').contains(document.activeElement))renderOut()}   // don't wipe a reason being typed
+
+if(!mount())return;
+refreshStatus();refreshFeed();
+setInterval(()=>{if(!document.hidden)refreshStatus()},4000);
+setInterval(()=>{if(!document.hidden)refreshFeed()},10000);
+// the per-agent run lists follow the status refresh while open
+setInterval(async()=>{if(document.hidden)return;for(const a of st.open){try{st.runs[a]=(await api('/agents/'+a+'/runs?limit=15')).runs}catch(e){}}if(st.open.size)renderStatus()},8000);
+})();
+</script>
+</body></html>

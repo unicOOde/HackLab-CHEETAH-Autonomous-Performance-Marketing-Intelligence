@@ -103,3 +103,6 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 data/synthetic/full/raw/
+
+# Agent runtime bus (messages, status, outbox) — local state, regenerated
+var/

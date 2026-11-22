@@ -171,10 +171,18 @@ instead only pre-loads forecast references and points a `Run` at `event_timeline
 (`cheetah_synth.event_timeline.build_event_timeline` — one row per real click/install, sorted by
 timestamp, generated alongside `journeys.parquet`/`funnel_events.parquet`), letting the backend's
 own worker do genuinely live, per-event ingestion instead (see Backend bullets above). Either way
-the `ForecastReference` band is a deliberately naive trailing-mean placeholder
-(`source="synthetic_naive_baseline"`), tuned against the full run's own ~45% day-to-day amount
-volatility to flag roughly one deviation across the month — not a forecasting model, and not
-tuned to coincide with any particular injected anomaly. Everything it writes is clearly tagged
+the `ForecastReference` band is a deliberately naive trailing-7-day median ± max(4·MAD-sigma, 15%)
+placeholder (`source="synthetic_naive_baseline"`, `naive_trailing_median_v1`) — not a forecasting
+model. It is sized for the default **`flat` daily profile** (`--daily-profile flat`,
+`journeys.flatten_daily_revenue`): daily clicks pinned to the calibrated monthly mean and daily
+Amount pinned near the month median (~3% noise) by best-of-N resampling of real payout-pool rows.
+Against that, the **default anomaly catalog** (`anomalies.build_default_catalog`) injects four
+whole-day revenue anomalies resolved against the day's actual revenue mix — Oct 7
+`postback_outage` (−45%, top country), Oct 14 `advertiser_rate_cut` (−40%, top vertical), Oct 20
+`promo_surge` (+60%, top placement), Oct 27 `tracking_break` (−35%, top placement) — so the run
+pauses on exactly those four days (3 below, 1 above). `--daily-profile calibrated` keeps the real
+daily shape (~45% CV, which this band would over-flag); `--anomalies segment` restores the old four
+single-segment anomalies (too small to move the aggregate curve). Everything it writes is clearly tagged
 synthetic (`source_kind="synthetic"` / `"live_computed"`) so it can never be mistaken for real
 revenue.
 
@@ -299,10 +307,20 @@ at the end over all collected change ids. Run standalone, each agent starts the 
 - `graph_overlooker.py`: explores the graph with read-only Cypher and proposes edge/property/status
   changes. Each one needs reasoning + evidence queries, and an **independent reviewer call** sees
   the re-run evidence and must approve it.
+- `product_manager_agent.py` ("Compass"): one fix discussion per reported issue: playbook candidate
+  (`agents/fix_playbook.md`), one round of stances (`agents/stances.py`), then seven deterministic
+  gates decide `fix_proposed` / `no_fix` + reason / `graph_only` / `monitor`. Read-only on the graph.
+  Only P1 is fully measured; other playbook entries are never proposed until a watcher reports them.
+- `graph_engineer_agent.py` ("Cartographer"): metric onboarding (`GraphStore.add_metric` /
+  `link_metrics`; FORMULA only with residual <= 1e-6 globally and per slice), and validation of
+  INFLUENCES edges as `ag_status='validated'` (read status as `coalesce(ag_status, status)`).
+  INFLUENCES writes need the independent reviewer; without the LLM they are deferred.
 
-Still missing for the full loop (see DESCRIPTION.md): a continuous monitor (what to watch,
-baselines, seasonality, completeness, planned events), dedup of repeated alerts
-(persisting vs. resolved issues), metric onboarding, and the demo scenarios with fault injection.
+These run as scheduled threads in the backend worker (`backend/agent_runtime/`, file bus in
+`var/agent_bus/`, plan in `agents/orchestration_plan.md`), shown on the Agentic Monitoring tab.
+
+Still missing for the full loop (see DESCRIPTION.md): a continuous monitor for the real affiliate
+data (the pacing watcher covers simulated paid telemetry), and the demo scenarios with fault injection.
 
 ### Agent conventions
 - LLM calls go through `llm.py` (`claude_json`: one call → one JSON object matching a schema, with
@@ -354,3 +372,69 @@ Cypher syntax and modeling questions.
   — real Oct 2026 data (see "Real data" above).
 - `data/synthetic/` — Track A's generated, calibrated synthetic journey data. Gitignored, fully
   regenerable, not source of truth.
+
+## Coding guidelines (Karpathy)
+
+Behavioral guidelines to reduce common LLM coding mistakes, from
+[andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills) (MIT). Also available
+as the `karpathy-guidelines` skill in `.claude/skills/`. Project-specific rules above take precedence.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+### 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+### 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

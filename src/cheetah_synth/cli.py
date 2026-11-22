@@ -44,6 +44,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
         run_id=args.run_id,
         seed=args.seed,
         anomalies=args.anomalies,
+        daily_profile=args.daily_profile,
         paths=paths,
         scale=ScaleConfig(scale=args.scale, days=args.days),
     )
@@ -64,9 +65,18 @@ def cmd_generate(args: argparse.Namespace) -> int:
     )
     print(f"Baseline: {len(journeys)} clicks, {int(journeys['converts'].sum())} conversions.")
 
+    if run_config.daily_profile == "flat":
+        flat = journeys_mod.flatten_daily_revenue(journeys, calibration, rng, noise=run_config.flat_noise)
+        if len(flat):
+            cv_before = flat["before"].std() / flat["before"].mean()
+            cv_after = flat["after"].std() / flat["after"].mean()
+            print(f"Flattened daily revenue: CV {cv_before:.1%} -> {cv_after:.1%} "
+                  f"({int(flat['scaled'].sum())} day(s) needed a scale correction).")
+
     specs = []
-    if run_config.anomalies == "default":
-        specs = anomalies_mod.build_default_catalog(calibration)
+    if run_config.anomalies in ("default", "segment"):
+        specs = (anomalies_mod.build_default_catalog(calibration) if run_config.anomalies == "default"
+                 else anomalies_mod.build_segment_catalog(calibration))
         journeys, funnel_df, labels_df = anomalies_mod.apply_anomalies(
             journeys, funnel_df, calibration, rng, specs, click_alloc, txn_alloc
         )
@@ -97,6 +107,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
         "scale": run_config.scale.scale,
         "days": run_config.scale.days,
         "anomalies": run_config.anomalies,
+        "daily_profile": run_config.daily_profile,
         "n_clicks": len(journeys),
         "n_conversions": int(journeys["converts"].sum()),
         "n_click_files": len(click_paths),
@@ -124,6 +135,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
     real_tx = real_data.load_transactions(paths.data_dir)
     real_perf = real_data.load_performance(paths.data_dir)
 
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    flat_profile = manifest.get("daily_profile", "calibrated") == "flat"
+
     excluded = {
         (row["game_placement_id"], row["country"]) for _, row in labels.iterrows()
     } if len(labels) else set()
@@ -133,6 +148,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         journeys, synthetic_tx, synthetic_perf, funnel_df,
         calibration, RunConfig(run_id=args.run_id).tolerances,
         excluded_segments=excluded,
+        flat_daily_profile=flat_profile,
     )
     validate.write_report(report, run_dir)
     print(f"Validation {'PASSED' if report['passed'] else 'FAILED'} — see {run_dir / 'validation_report.md'}")
@@ -207,7 +223,8 @@ def main(argv=None) -> int:
     p_gen.add_argument("--scale", type=float, default=1.0)
     p_gen.add_argument("--days", type=int, default=31)
     p_gen.add_argument("--seed", type=int, default=42)
-    p_gen.add_argument("--anomalies", choices=["none", "default"], default="default")
+    p_gen.add_argument("--anomalies", choices=["none", "default", "segment"], default="default")
+    p_gen.add_argument("--daily-profile", choices=["flat", "calibrated"], default="flat")
     p_gen.set_defaults(func=cmd_generate)
 
     p_val = sub.add_parser("validate")
@@ -221,7 +238,8 @@ def main(argv=None) -> int:
     p_all.add_argument("--scale", type=float, default=1.0)
     p_all.add_argument("--days", type=int, default=31)
     p_all.add_argument("--seed", type=int, default=42)
-    p_all.add_argument("--anomalies", choices=["none", "default"], default="default")
+    p_all.add_argument("--anomalies", choices=["none", "default", "segment"], default="default")
+    p_all.add_argument("--daily-profile", choices=["flat", "calibrated"], default="flat")
     p_all.add_argument("--force", action="store_true")
     p_all.set_defaults(func=cmd_all)
 

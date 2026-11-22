@@ -14,7 +14,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from . import funnel
+from . import funnel, surfaces
 from .calibration import Calibration
 from .config import RunConfig
 from .identities import IdAllocator, SYNTH_CLICK_ID_START, SYNTH_TRANSACTION_ID_START
@@ -24,6 +24,7 @@ JOURNEY_COLUMNS = [
     "time",
     "game_placement_id",
     "country",
+    "surface",
     "converts",
     "censored",
     "transaction_id",
@@ -102,6 +103,73 @@ def bootstrap_payout(calibration: Calibration, rng: np.random.Generator,
         rows = rng.integers(0, len(pool), size=k)
         out[mask] = pool[rows] * jitter[mask, None]
     return np.clip(out, 0.0, None)
+
+
+MONEY_COLUMNS = ["amount", "commission", "payout", "margin"]
+# Below this relative miss, a day's best resampled total is kept as-is (exact real pool values);
+# above it, the remainder is closed with a uniform per-day scale factor. Scaling is avoided
+# where possible for the same reason bootstrap_payout() avoids jitter: it smears the real
+# fixed-rate point masses that the ECDF validation check relies on.
+FLATTEN_RESIDUAL_TOL = 0.02
+
+
+def _payout_pool_for(calibration: Calibration, vertical) -> np.ndarray:
+    if pd.isna(vertical):
+        return calibration.payout_pools["__global__"]
+    return calibration.payout_pools.get(vertical, calibration.payout_pools["__global__"])
+
+
+def flatten_daily_revenue(df: pd.DataFrame, calibration: Calibration, rng: np.random.Generator,
+                           noise: float = 0.03, n_candidates: int = 256) -> pd.DataFrame:
+    """Pins each conversion day's total Amount near the month's median day (times a small
+    `1 + N(0, noise)` wiggle), mutating df in place. Returns a per-day summary for logging.
+
+    Why this exists: ~100 conversions/day with heavy-tailed real amounts give the calibrated
+    baseline ~45% day-to-day revenue volatility, which buries any injected anomaly. Instead of
+    rescaling amounts, each day's payouts are re-drawn `n_candidates` times from the same
+    vertical-stratified real pools and the draw whose total lands closest to the target is kept,
+    so values stay exact real pool rows. Only when no candidate gets within FLATTEN_RESIDUAL_TOL
+    (typically day 1, which has no prior-month clicks feeding lagged conversions) is the rest
+    closed with a uniform scale factor. Censored conversions (realized after month end) are left
+    untouched, since they never show up in any October day's total."""
+    live = df["converts"].to_numpy(dtype=bool) & ~df["censored"].to_numpy(dtype=bool)
+    if not live.any():
+        return pd.DataFrame(columns=["day", "before", "target", "after", "scaled"])
+    live_idx = df.index[live]
+    conv_day = df.loc[live_idx, "conversion_time"].dt.date.to_numpy()
+    verticals = calibration.placement_meta["vertical"].reindex(
+        df.loc[live_idx, "game_placement_id"].to_numpy()
+    ).to_numpy()
+    amounts = df.loc[live_idx, "amount"].to_numpy(dtype=float)
+    days = sorted(pd.unique(conv_day))
+    before = {d: float(amounts[conv_day == d].sum()) for d in days}
+    base = float(np.median(list(before.values())))
+
+    summary = []
+    for d in days:
+        in_day = conv_day == d
+        rows = live_idx[in_day]
+        day_verticals = verticals[in_day]
+        n = len(rows)
+        target = base * max(0.0, 1.0 + rng.normal(0.0, noise))
+        candidates = np.empty((n_candidates, n, 4), dtype=np.float64)
+        for vertical in pd.unique(day_verticals):
+            mask = (day_verticals == vertical) if pd.notna(vertical) else pd.isna(day_verticals)
+            pool = _payout_pool_for(calibration, vertical)
+            picks = rng.integers(0, len(pool), size=(n_candidates, int(mask.sum())))
+            candidates[:, mask, :] = pool[picks]
+        candidates = np.clip(candidates, 0.0, None)
+        totals = candidates[:, :, 0].sum(axis=1)
+        best = int(np.argmin(np.abs(totals - target)))
+        chosen = candidates[best]
+        scaled = False
+        if totals[best] > 0 and abs(totals[best] / target - 1.0) > FLATTEN_RESIDUAL_TOL:
+            chosen = chosen * (target / totals[best])
+            scaled = True
+        df.loc[rows, MONEY_COLUMNS] = chosen
+        summary.append({"day": d, "before": before[d], "target": target,
+                        "after": float(chosen[:, 0].sum()), "scaled": scaled})
+    return pd.DataFrame(summary)
 
 
 def materialize_conversions(df: pd.DataFrame, mask: np.ndarray, calibration: Calibration,
@@ -198,9 +266,16 @@ def simulate_month(calibration: Calibration, run_config: RunConfig,
     txn_alloc = txn_alloc or IdAllocator(SYNTH_TRANSACTION_ID_START)
 
     dates = sorted(calibration.daily_counts.index)[: run_config.scale.days]
+    flat = getattr(run_config, "daily_profile", "calibrated") == "flat"
+    mean_daily_clicks = float(calibration.daily_counts.mean())
     day_frames = []
     for day in dates:
-        base_n = int(calibration.daily_counts.loc[day])
+        if flat:
+            # Flat profile: the calibrated monthly mean with a small wiggle, instead of the real
+            # day-to-day click shape.
+            base_n = mean_daily_clicks * max(0.0, 1.0 + rng.normal(0.0, run_config.flat_noise * 2 / 3))
+        else:
+            base_n = int(calibration.daily_counts.loc[day])
         n = int(round(base_n * run_config.scale.scale))
         if n <= 0:
             continue
@@ -208,13 +283,15 @@ def simulate_month(calibration: Calibration, run_config: RunConfig,
         countries = apply_country_nulls(calibration, rng, countries)
         times = sample_timestamps_in_day(calibration, rng, pd.Timestamp(day), n)
         click_ids = click_alloc.next_batch(n)
-        converts = rng.random(n) < cvr
+        surface, cvr_mult = surfaces.sample_surfaces(rng, n)
+        converts = rng.random(n) < np.clip(cvr * cvr_mult, 0.0, 1.0)
 
         day_df = pd.DataFrame({
             "click_id": click_ids,
             "time": times,
             "game_placement_id": placements,
             "country": countries,
+            "surface": surface,
             "converts": converts,
         })
         for col, values in _empty_conversion_columns(n).items():

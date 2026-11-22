@@ -9,6 +9,7 @@ from sqlalchemy import select, func, or_
 from sqlalchemy.exc import IntegrityError
 from models import initialize, SessionLocal, Run, Event, DailyAmount, SourceEvent, ForecastReference, ForecastValue, Command, Incident, Action, AgentTask, RunMetrics
 from core import serialize_run, emit, MONTH_DAYS, DAY_START, DAY_END, check_31_days, prior
+from agent_runtime import api as agent_api
 
 app=FastAPI(title='CHEETAH v1.5 MVP Backend',version='1.5.0')
 app.add_middleware(CORSMiddleware,allow_origins=os.getenv('CORS_ORIGINS','http://localhost:8000,http://127.0.0.1:8000').split(','),allow_methods=['GET','POST','PATCH'],allow_headers=['Content-Type','Last-Event-ID','Idempotency-Key'])
@@ -117,13 +118,14 @@ def incident_dict(i):return {'incident_id':i.id,'run_id':i.run_id,'scope':i.scop
 def task_dict(t):return {'task_id':t.id,'run_id':t.run_id,'incident_id':t.incident_id,'agent':t.agent,'status':t.status,'evidence_outcome':t.evidence_outcome,'fallback':t.fallback}
 
 # ---- Reports: paginated/filterable source events + CSV export + Performance Report rollup ----
-SOURCE_EVENT_CSV_COLUMNS=['id','kind','source_id','event_time_utc','event_day','game_placement_id','country','amount','commission','payout','margin','vertical','category']
+SOURCE_EVENT_CSV_COLUMNS=['id','kind','source_id','event_time_utc','event_day','game_placement_id','country','amount','commission','payout','margin','vertical','category','surface']
 
-def _source_event_filters(stmt,dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q):
+def _source_event_filters(stmt,dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q,surface=None):
     stmt=stmt.where(SourceEvent.dataset_id==dataset_id)
     if kind:stmt=stmt.where(SourceEvent.kind==kind)
     if game_placement_id:stmt=stmt.where(SourceEvent.game_placement_id==game_placement_id)
     if country:stmt=stmt.where(SourceEvent.country==country)
+    if surface:stmt=stmt.where(SourceEvent.surface==surface)
     if event_day_from:stmt=stmt.where(SourceEvent.event_day>=event_day_from)
     if event_day_to:stmt=stmt.where(SourceEvent.event_day<=event_day_to)
     if q:
@@ -132,16 +134,16 @@ def _source_event_filters(stmt,dataset_id,kind,game_placement_id,country,event_d
     return stmt
 
 def _source_event_dict(e):
-    return {'id':e.id,'kind':e.kind,'source_id':e.source_id,'event_time_utc':e.event_time_utc,'event_day':e.event_day,'game_placement_id':e.game_placement_id,'country':e.country,'amount':e.amount,'commission':e.commission,'payout':e.payout,'margin':e.margin,'vertical':e.vertical,'category':e.category}
+    return {'id':e.id,'kind':e.kind,'source_id':e.source_id,'event_time_utc':e.event_time_utc,'event_day':e.event_day,'game_placement_id':e.game_placement_id,'country':e.country,'amount':e.amount,'commission':e.commission,'payout':e.payout,'margin':e.margin,'vertical':e.vertical,'category':e.category,'surface':e.surface}
 
-def _stream_source_events_csv(dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q):
+def _stream_source_events_csv(dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q,surface=None):
     buf=io.StringIO();writer=csv.writer(buf)
     writer.writerow(SOURCE_EVENT_CSV_COLUMNS);yield buf.getvalue();buf.seek(0);buf.truncate(0)
     if not dataset_id:return
     with SessionLocal() as db:
         last_id=0
         while True:
-            stmt=_source_event_filters(select(SourceEvent),dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q).where(SourceEvent.id>last_id).order_by(SourceEvent.id.asc()).limit(5000)
+            stmt=_source_event_filters(select(SourceEvent),dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q,surface).where(SourceEvent.id>last_id).order_by(SourceEvent.id.asc()).limit(5000)
             rows=db.scalars(stmt).all()
             if not rows:break
             for e in rows:writer.writerow([getattr(e,c) for c in SOURCE_EVENT_CSV_COLUMNS])
@@ -150,7 +152,7 @@ def _stream_source_events_csv(dataset_id,kind,game_placement_id,country,event_da
             if len(rows)<5000:break
 
 @app.get('/api/v1/runs/{run_id}/source_events')
-def list_source_events(run_id:str,kind:str|None=None,game_placement_id:str|None=None,country:str|None=None,event_day_from:str|None=None,event_day_to:str|None=None,q:str|None=None,cursor:int|None=None,limit:int=100,sort:str='desc',format:str|None=None):
+def list_source_events(run_id:str,kind:str|None=None,game_placement_id:str|None=None,country:str|None=None,event_day_from:str|None=None,event_day_to:str|None=None,q:str|None=None,cursor:int|None=None,limit:int=100,sort:str='desc',format:str|None=None,surface:str|None=None):
     """Paginated/filterable listing over the full source_events table for a run — unlike the
     snapshot endpoint's capped-150-rows tail or the SSE stream's recent-batch sampling, this can
     browse/filter/export the complete dataset (up to millions of rows). `q` matches source_id/
@@ -165,10 +167,10 @@ def list_source_events(run_id:str,kind:str|None=None,game_placement_id:str|None=
         if not run:raise HTTPException(404,'Run not found')
         dataset_id=run.dataset_id
     if format=='csv':
-        return StreamingResponse(_stream_source_events_csv(dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q),media_type='text/csv',headers={'Content-Disposition':f'attachment; filename="source_events_{run_id}.csv"'})
+        return StreamingResponse(_stream_source_events_csv(dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q,surface),media_type='text/csv',headers={'Content-Disposition':f'attachment; filename="source_events_{run_id}.csv"'})
     with SessionLocal() as db:
         if not dataset_id:return {'items':[],'next_cursor':None,'total_count':0}
-        base=_source_event_filters(select(SourceEvent),dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q)
+        base=_source_event_filters(select(SourceEvent),dataset_id,kind,game_placement_id,country,event_day_from,event_day_to,q,surface)
         total=db.scalar(select(func.count()).select_from(base.subquery()))
         stmt=base
         if cursor is not None:
@@ -383,5 +385,78 @@ def comparison_not_ready(run_id:str):return {'status':'unavailable','reason':'No
 @app.get('/api/v1/context/graph')
 def graph_not_ready():return {'status':'unavailable','reason':'Neo4j context model pending','graph_version':None,'nodes':[],'edges':[]}
 
+# ---------------------------------------------------------------------------- agents
+# Agents run as scheduler threads in worker.py (agent_runtime). The API only reads their files
+# (status/outbox/messages) and writes trigger/event/feedback files; it never touches the threads.
+
+class AgentTriggerRequest(BaseModel):
+    reason:str='manual'
+    payload:dict|None=None
+
+class AgentEventRequest(BaseModel):
+    name:str=Field(min_length=1,max_length=120,pattern=r'^[A-Za-z0-9_.:-]+$')
+    payload:dict|None=None
+
+class FixFeedbackRequest(BaseModel):
+    decision:str
+    reason:str=''
+
+class MetricSubmission(BaseModel):
+    # a contributor names and defines a metric; the graph engineer decides where it goes in the graph
+    id:str=Field(min_length=1,max_length=80)
+    definition:str=Field(min_length=1,max_length=500)
+    unit:str
+    cypher_value:str=Field(min_length=1,max_length=300)
+    source_query:str|None=Field(default=None,max_length=4000)
+    domain:str|None=None
+    config:dict|None=None
+
 @app.get('/api/v1/agents/status')
-def agent_status():return {'agents':[{'name':name,'status':'not_configured' if name!='Deviation Detector' else 'ready_when_references_loaded'} for name in ['Forecast Service','Deviation Detector','Investigator','Evidence Reviewer','Fix Action']]}
+def agent_status():return agent_api.status()
+
+@app.get('/api/v1/agents/messages')
+def agent_messages(limit:int=50,type:str|None=None,agent:str|None=None):
+    return {'messages':agent_api.messages(limit=min(limit,500),type=type,agent=agent)}
+
+@app.get('/api/v1/agents/events')
+def agent_events(limit:int=50):return {'events':agent_api.events(min(limit,500))}
+
+@app.post('/api/v1/agents/events',status_code=202)
+def agent_event(req:AgentEventRequest):return agent_api.event(req.name,req.payload)
+
+@app.get('/api/v1/agents/briefs')
+def agent_briefs(limit:int=10):return {'briefs':agent_api.outbox('briefs',min(limit,200))}
+
+@app.get('/api/v1/agents/discussions')
+def agent_discussions(limit:int=30,outcome:str|None=None):
+    return {'discussions':agent_api.outbox('discussions',min(limit,500),outcome=outcome)}
+
+@app.get('/api/v1/agents/fixes')
+def agent_fixes(limit:int=50,status:str|None=None):
+    return {'fixes':agent_api.outbox('fixes',min(limit,500),status=status)}
+
+@app.get('/api/v1/agents/decisions')
+def agent_decisions(limit:int=20):return {'decisions':agent_api.outbox('decisions',min(limit,500))}
+
+@app.post('/api/v1/agents/metrics',status_code=202)
+def agent_submit_metric(req:MetricSubmission):
+    try:return agent_api.submit_metric(req.model_dump(exclude_none=True))
+    except ValueError as e:raise HTTPException(422,str(e))
+
+@app.post('/api/v1/agents/fixes/{fix_id}/feedback',status_code=201)
+def agent_fix_feedback(fix_id:str,req:FixFeedbackRequest):
+    try:return agent_api.fix_feedback(fix_id,req.decision,req.reason)
+    except agent_api.NotFound:raise HTTPException(404,'Fix not found')
+    except agent_api.Conflict as e:raise HTTPException(409,str(e))
+    except ValueError as e:raise HTTPException(422,str(e))
+
+@app.get('/api/v1/agents/{name}/runs')
+def agent_runs(name:str,limit:int=20):
+    try:return {'runs':agent_api.runs(name,min(limit,200))}
+    except agent_api.NotFound:raise HTTPException(404,'Unknown agent')
+
+@app.post('/api/v1/agents/{name}/trigger',status_code=202)
+def agent_trigger(name:str,req:AgentTriggerRequest|None=None):
+    req=req or AgentTriggerRequest()
+    try:return agent_api.trigger(name,req.reason,req.payload)
+    except agent_api.NotFound:raise HTTPException(404,'Unknown agent')

@@ -94,8 +94,8 @@ adapter that pushes a generated run straight into this backend's own ingestion e
 
 Everything pushed this way is unambiguously marked synthetic in the data itself —
 `source_kind="synthetic"` on daily amounts, `source="synthetic_naive_baseline"` /
-`model_version="naive_trailing_mean_v0"` on the forecast references (a deliberately naive
-trailing-mean placeholder, **not** a TabPFN forecast — TabPFN isn't connected, per "Not yet
+`model_version="naive_trailing_median_v1"` on the forecast references (a deliberately naive
+trailing-median placeholder, **not** a TabPFN forecast — TabPFN isn't connected, per "Not yet
 operational" above) — so nothing from this path could be mistaken for real revenue or a real
 model output. Re-running `push-to-backend` with the same `--dataset-id` fails with `409` (dataset
 IDs are immutable) — pass a new `--dataset-id` for a fresh ingest, or just `POST /api/v1/runs

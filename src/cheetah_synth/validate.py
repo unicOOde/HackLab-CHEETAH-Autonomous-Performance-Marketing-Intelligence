@@ -35,6 +35,7 @@ def compare_to_real(
     calibration: Calibration,
     tolerances: ToleranceConfig,
     excluded_segments: Optional[set] = None,
+    flat_daily_profile: bool = False,
 ) -> Dict[str, Any]:
     excluded_segments = excluded_segments or set()
     checks: List[Dict[str, Any]] = []
@@ -111,12 +112,26 @@ def compare_to_real(
     real_series = calibration.daily_counts.loc[common_days].to_numpy(dtype=float)
     synth_series = synth_daily.loc[common_days].to_numpy(dtype=float)
     corr = float(np.corrcoef(real_series, synth_series)[0, 1]) if len(common_days) > 1 else float("nan")
-    checks.append({
-        "name": "daily_volume_correlation",
-        "correlation": corr, "n_days": len(common_days),
-        "tolerance": tolerances.daily_volume_corr_min,
-        "passed": bool(corr >= tolerances.daily_volume_corr_min) if not np.isnan(corr) else False,
-    })
+    if flat_daily_profile:
+        # The flat profile deliberately replaces the real day-to-day shape with the monthly mean,
+        # so correlation against the real curve is meaningless — check flatness instead.
+        mean = float(synth_series.mean()) if len(synth_series) else float("nan")
+        cv = float(synth_series.std() / mean) if len(synth_series) > 1 and mean > 0 else float("nan")
+        checks.append({
+            "name": "daily_volume_flat",
+            "cv": cv, "n_days": len(common_days),
+            "real_mean": float(real_series.mean()) if len(real_series) else float("nan"),
+            "synthetic_mean": mean,
+            "tolerance": 0.05,
+            "passed": bool(cv <= 0.05) if not np.isnan(cv) else False,
+        })
+    else:
+        checks.append({
+            "name": "daily_volume_correlation",
+            "correlation": corr, "n_days": len(common_days),
+            "tolerance": tolerances.daily_volume_corr_min,
+            "passed": bool(corr >= tolerances.daily_volume_corr_min) if not np.isnan(corr) else False,
+        })
 
     # 4. Payout/commission/payout/margin/amount distribution comparison
     dist_checks = []

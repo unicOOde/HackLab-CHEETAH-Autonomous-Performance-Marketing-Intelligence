@@ -1,11 +1,18 @@
 # Source Data
 data/
 
-# SQLite database files
+# SQLite
 *.db
 *.db-shm
 *.db-wal
 *.db-journal
+
+# Large data files
+data/synthetic/full/raw/
+
+# OS
+.DS_Store
+Thumbs.db
 
 # Personal, not shared with the team
 CLAUDE.local.md
@@ -92,3 +99,4 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+data/synthetic/full/raw/

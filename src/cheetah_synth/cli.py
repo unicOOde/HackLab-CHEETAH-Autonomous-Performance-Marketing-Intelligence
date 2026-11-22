@@ -165,12 +165,16 @@ def cmd_build_timeline(args: argparse.Namespace) -> int:
 def cmd_push_to_backend(args: argparse.Namespace) -> int:
     paths = PathsConfig(data_dir=Path(args.data_dir), out_dir=Path(args.out_dir))
     run_dir = paths.run_dir(args.run_id)
+    baseline = ("references issued live by the backend's TabPFN-TS worker"
+                if args.forecast_provider == "tabpfn"
+                else "naive placeholder reference baseline — not a real forecast")
     print(f"Pushing {run_dir} to {args.backend_url} as dataset_id={args.dataset_id!r} "
-          f"(synthetic demo data, naive placeholder reference baseline — not a real forecast)...")
+          f"(synthetic demo data, {baseline})...")
     if args.ingestion_mode == "live_events":
         result = backend_adapter.register_live_run(
             run_dir, args.backend_url, args.dataset_id,
             create_run=not args.no_create_run, start=args.start,
+            forecast_provider=args.forecast_provider,
         )
         print(f"Registered live event timeline at {result['event_source_path']}, "
               f"{result['references']} naive reference intervals.")
@@ -179,6 +183,7 @@ def cmd_push_to_backend(args: argparse.Namespace) -> int:
             run_dir, args.backend_url, args.dataset_id,
             include_non_converting_sample=args.sample_clicks, seed=args.seed,
             create_run=not args.no_create_run, start=args.start,
+            forecast_provider=args.forecast_provider,
         )
         print(f"Pushed {result['daily_amounts']} daily amounts, {result['source_events']} source "
               f"events, {result['references']} naive reference intervals.")
@@ -244,6 +249,9 @@ def main(argv=None) -> int:
                          help="preloaded_daily: bulk-POST everything up front (today's demo path). "
                               "live_events: register the run's event_timeline.parquet and let the backend "
                               "worker stream it in live, per event, as the run plays.")
+    p_push.add_argument("--forecast-provider", choices=["naive", "tabpfn"], default="naive",
+                         help="naive: push the trailing-mean placeholder references (default). "
+                              "tabpfn: push none; the backend worker issues TabPFN-TS references at each day close.")
     p_push.set_defaults(func=cmd_push_to_backend)
 
     args = parser.parse_args(argv)

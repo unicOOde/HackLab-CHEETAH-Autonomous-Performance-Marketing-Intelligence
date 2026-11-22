@@ -108,3 +108,84 @@ open-ended, recorded here so they read as intentional rather than overlooked:
 
 None of these block the core ask (live data, not static samples) — they're narrower-than-ideal
 UX/filtering completeness, not missing data or fabricated values.
+
+## 2026-11-22 — TabPFN-TS forecast service (FC-01) for the aggregate Amount
+
+**Decision:** The PDR's FC-01 is implemented online in the worker (`backend/forecasting.py`), using
+TabPFN-TS in Prior Labs **cloud mode** (`TabPFNMode.CLIENT`, `TABPFN_TOKEN`), for runs created with
+`forecast_provider='tabpfn'`. Existing runs and imported references are unchanged (`external` default).
+
+- **One-day horizon first.** At the close of D only D+1 is forecast, and it is locked as the immutable
+  reference (`FORECAST_HORIZON_DAYS=1`). The data model and adapter already support the PDR's 7-day
+  outlook, so switching is a configuration change.
+- **Warm-up = 7 days of history**, so the first TabPFN reference covers Oct 8. Earlier days are explicitly
+  `forecast.unavailable` / `warm_up` (§6.4 "explicit warm-up … or unavailable"), not a substitute baseline.
+- **No fallback on provider failure** (§6.4, §7.5, AT-121). A timeout or error emits `provider_error`, no
+  reference is locked, and the next day is `reference_unavailable`. No incident is created and no healthy
+  state is implied.
+- **Forecast at close even when paused.** §6.2 step 6 says to issue the forecast "when permitted to
+  continue". Because no fix actions exist yet, D's data cannot change between close and resume, so issuing
+  at close is equivalent and keeps the reference ready. Revisit when sandbox interventions land.
+- **Interval = P10–P90** (§6.3 [PROPOSED]), with P50 as the point. These are model output quantiles, not
+  calibrated coverage: see the backtest.
+- **Telemetry off.** The package's PostHog usage telemetry is disabled (`TABPFN_DISABLE_TELEMETRY=1`),
+  so only the inference request leaves the backend.
+
+### Backtest result (2026-11-22, `backend/forecast_backtest.py`, run `full`, 24 cutoffs Oct 7–30)
+
+`tabpfn-ts-1.4.0/p10-p50-p90`, one-day horizon: **MAE €2,900, WAPE 35.0%, bias +€514, P10–P90 coverage
+75%** (nominal 80%). About 3 s per cloud call. The interval is honest, but wide, because the synthetic
+aggregate swings about 45% from day to day.
+
+**None of the 6 breaches (Oct 11↓, 18↑, 23↓, 25↑, 29↑, 30↑) fall in an injected-anomaly window. None of
+the four injected anomalies breaches the aggregate band.** Tracing each anomaly's revenue by conversion
+day explains why:
+
+| Anomaly | Effect on daily aggregate Amount | Visible to an aggregate Amount detector? |
+|---|---|---|
+| A-001 traffic_burst | 0 conversions: clicks only | No, by construction. Needs a click-volume signal |
+| A-002 cvr_shock | 23–30% of the day's Amount, Oct 13–15 | Borderline. Oct 13 €10,182 vs upper €11,602 |
+| A-003 payout_shock | ≤9% of the day's Amount | No |
+| A-004 latency_blowout | 7 conversions, ≤2% | No. Needs a latency signal |
+
+**Open decision:** the PDR §13.2 demo needs 2 negative + 1 positive detected events. The aggregate
+Amount band can't deliver that with the current anomaly catalog. Ways forward:
+- make the injected anomalies aggregate-visible (higher severity, or more segments);
+- add segment- or signal-level detectors (traffic, CVR, payout and latency, per the ANOM01 PRD);
+- or both.
+The 6 unlabeled breaches are natural variance in the synthetic baseline. Each would pause the run.
+
+### Follow-up (2026-11-22): 7-day horizon, 7-day context, visible trigger, connection status
+
+- **Horizon is now 7 days** (`FORECAST_HORIZON_DAYS=7`), so the chart shows 7 closed days plus 7 forecast
+  days. Only D+1 is locked as the reference; D+2..D+7 are outlook only.
+- **Context is the last 7 closed days** (`FORECAST_CONTEXT_DAYS=7`), not the full history. The backtest
+  uses the same window, so its numbers above (full-history context) need a rerun.
+- **Trigger:** the forecaster starts when a new day's timestamp enters the stream, i.e. when the live
+  clock rolls over. It emits `forecast.requested` (`trigger: day_rollover`) before the cloud call, and the
+  UI shows "Forecasting…" until `forecast.updated` arrives.
+- **The honest P10–P90 band is kept** on purpose, even though the design mock shows a much tighter
+  illustrative band (about ±8%). On this data an honest band is about ±50%.
+- **Connection status:** the backend loads `.env` at startup. A header pill shows whether the TabPFN token
+  and package are loaded (dark blue) or not (light blue). The token is never sent to the browser.
+- **The earlier "current" screenshot** was a naive-reference run, because `start_backend.sh` used to
+  default to `naive`. It now defaults to `tabpfn` whenever `/health` reports the forecast service as
+  configured.
+
+**Backtest rerun with the 7-day context window** (same 24 cutoffs, D+1):
+
+| | Full-history context | 7-day context (now live) |
+|---|---|---|
+| MAE | €2,900 | €3,043 |
+| WAPE | 35.0% | 36.7% |
+| Bias | +€514 | −€7 |
+| P10–P90 coverage | 75% | 75% |
+| Breaches | 6, none labeled | 6, one coinciding with a label (Oct 26, A-004) |
+
+- **Accuracy:** about the same, and the bias is gone.
+- **Volatility:** bands now move more from day to day, from €2.7k wide (Oct 17) to €15.9k wide (Oct 31).
+  With only 7 points, one spike dominates: Oct 30's €18k pushed Oct 31's P50 to €16k.
+- **The Oct 26 breach is a coincidence, not a detection.** A-004 contributes ≤2% of that day's Amount
+  (see the table above), so the open anomaly-visibility decision is unchanged.
+- **Latency:** one call took 28 s (Oct 29) against a typical ~3 s. That's within the 60 s timeout, but in
+  live playback it stalls the run for that long at the rollover.

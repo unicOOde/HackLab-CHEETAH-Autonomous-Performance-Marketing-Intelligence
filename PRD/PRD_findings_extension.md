@@ -81,6 +81,38 @@ engineering wall. If Track B should eventually react to the same injected anomal
 extension needs to land first — then feeding it synthetic data becomes a live option rather than a
 blocked one.
 
+**Update (2026-11-22, later):** the Day-node extension has now landed for the streamed run. See
+"Streamed day layer in Neo4j" below. The monthly build from the real files is unchanged.
+
+## 2026-11-22 — Streamed day layer in Neo4j, written before each forecast
+
+**Decision:** as each day closes, the backend worker (`backend/graph_sync.py`) writes the streamed run's
+end-of-day metrics into the Track B graph:
+- the marketplace day: `(Dataset)-[:CLOSED_DAY]->(Day)`
+- each campaign: `(Ad)-[:ON_DAY]->(Day)`
+- each campaign×country report row: `(Ad)-[:ON_DAY_IN {country}]->(Day)`
+
+This happens after the close commits and **before** the D+1 TabPFN forecast, so the agents can investigate
+exactly the day the detector evaluated.
+
+**How it addresses the three earlier objections:**
+- **Time axis:** the edges are per day, so a single-day shock stays visible.
+- **Real structure:** the monthly aggregate edges from the real files are untouched. The day layer only
+  MERGEs `Ad`/`Country`/`Vertical`/`Category`/`Day` by id and adds its own relationship types.
+- **Provenance:** every day edge carries `dataset_id`, `run_id` and the day's `source_kind`, taken from
+  the backend's `DailyAmount`.
+
+**Scope choices (product owner):**
+- Data comes from the events the backend actually received.
+- One dataset at a time: a new dataset's first sync deletes the previous one's day layer.
+- Only closed days, so the graph never runs ahead of the simulation clock.
+- Grain: marketplace, campaign, campaign×country.
+- Metrics per edge:
+  - totals, conversion rate, EPC, ROAS, AOV, margin rate and share of the day
+  - on marketplace and campaign edges, a trailing 7-day baseline (avg, % vs. baseline, day-over-day)
+  - on the marketplace edge, also the locked forecast band, the classification and the incident id
+- If Neo4j is missing or fails, an explicit `graph.sync_unavailable` is emitted and the run continues.
+
 ## 2026-11-22 — Reports screen goes live: known, deliberate limitations
 
 **Decision:** The Reports screen's "Combined event feed"/"Click Events"/"Install Transaction

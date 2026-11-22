@@ -5,7 +5,7 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from agent_runtime import publish_event
 from models import Run, Event, Command, DailyAmount, SourceEvent, ForecastReference, ForecastValue, Incident, Action, AgentTask, RunMetrics, RunCampaignSeen, utcnow
-import forecasting
+import forecasting, graph_sync
 
 DAY_START='2026-10-01'
 DAY_END='2026-10-31'
@@ -103,7 +103,17 @@ def run_step(db, run):
     close_day(db,run,day,amount)
     emit(db,run.id,'simulation.state_changed',serialize_run(run),day)
     db.commit()
+    graph_after_close(db,run,day)
     if run.forecast_provider=='tabpfn':forecast_after_close(db,run,day)
+
+def graph_after_close(db, run, day):
+    """Write day D's end-of-day metrics into Neo4j once its close is committed and before the
+    D+1 forecast runs (backend/graph_sync.py). Runs on anomaly days too. Returns True if a write
+    was attempted."""
+    db.commit()
+    attempted=graph_sync.sync_day(db,run,day,emit,reference=forecast_for(db,run.dataset_id,day,reference_source(run)))
+    db.commit()
+    return attempted
 
 def forecast_after_close(db, run, day):
     """FC-01 hook: issue the D+1 forecast once day D's close is committed, so the (possibly slow)
@@ -241,10 +251,14 @@ def _advance_to(db, run, state, target, row_cap=LIVE_TICK_ROW_CAP):
         run.sim_clock_utc=boundary
         if boundary<day_end:return
         _close_live_day(db,run,state,day)
+        synced=graph_after_close(db,run,day)
         if run.forecast_provider=='tabpfn':
             forecast_after_close(db,run,day)
             # Inference wall-time must not become simulated time (same mechanism as resume/restart),
             # and day D+1 starts only on the next tick, after its reference is locked.
+            run.last_tick_wall_utc=None
+            return
+        if synced:  # same for the Neo4j write's wall time
             run.last_tick_wall_utc=None
             return
         if run.status!='running':return

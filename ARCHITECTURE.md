@@ -242,6 +242,22 @@ Detection today looks only at the aggregate `amount_total`. Where the band comes
   (clock reset), so inference time never turns into simulated time. A `tabpfn` run evaluates against and
   displays only `source='tabpfn_ts'` references.
 
+**Neo4j day layer (`backend/graph_sync.py`).** After every close is committed, and before
+`forecast_after_close`, `core.graph_after_close` writes day D into Neo4j. It writes D's marketplace day, per
+campaign and per campaign×country, all computed from the stored `SourceEvent`s. The edges are:
+- `(Dataset)-[:CLOSED_DAY]->(Day)`
+- `(Ad)-[:ON_DAY]->(Day)`
+- `(Ad)-[:ON_DAY_IN {country}]->(Day)`
+
+Ads, countries, verticals, categories and days are MERGEd by id, so the layer joins the monthly graph.
+
+The edges carry totals, ratios (conversion rate, EPC, ROAS, AOV, margin rate, share), a trailing 7-day
+baseline, and on `CLOSED_DAY` the locked band and any incident.
+
+The first sync of a new dataset deletes every other dataset's day layer, and only closed days are written.
+The step emits `graph.synced` or, when Neo4j isn't configured or the write fails, `graph.sync_unavailable`.
+Either way the run continues. When a write was attempted, the live tick stops there, as for the forecast.
+
 ### F. Event delivery (outbox → SSE → UI)
 
 ```mermaid

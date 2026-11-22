@@ -296,7 +296,12 @@ async function api(path,opts={}){
 }
 // Forecast-service connection pill: dark blue = TabPFN token loaded + package installed (backend
 // reports `configured`), light blue = not connected. Never receives or shows the token itself.
-async function loadForecastService(){try{state.forecastService=(await api('/health')).forecast||null}catch(e){state.forecastService=null}renderTabpfnPill()}
+async function loadForecastService(){try{const h=await api('/health');state.forecastService=h.forecast||null;state.graphProvider=h.graph_provider||null}catch(e){state.forecastService=null;state.graphProvider=null}renderTabpfnPill();renderGraphPill()}
+// Neo4j day layer (backend/graph_sync.py): configured from /health, last sync from graph.synced / graph.sync_unavailable.
+function renderGraphPill(){const el=$('v15-graph-pill');if(!el)return;const ok=state.graphProvider==='configured',g=state.graphInfo;
+ el.textContent=ok?'Neo4j · connected':'Neo4j · not connected';el.style.background=ok?'#1f3f9e':'#dbe4fb';el.style.color=ok?'#fff':'#3a5aa8';
+ const last=g?.state==='synced'?` · ${g.day} synced (${g.campaigns} campaigns, ${g.campaign_country_rows} campaign×country rows)`:g?.state==='unavailable'&&g.reason==='provider_error'?` · ${g.day} sync failed (${g.error_class||'error'})`:'';
+ el.title=ok?`Daily campaign metrics are written to Neo4j at each day close${last}`:state.graphProvider===null?'Graph connection: backend unreachable':'Graph not connected: set NEO4J_URI / NEO4J_PASSWORD and install the neo4j driver'}
 function renderTabpfnPill(){const el=$('v15-tabpfn-pill');if(!el)return;const f=state.forecastService,ok=f?.status==='configured';
  el.textContent=ok?'TabPFN · connected':'TabPFN · not connected';el.style.background=ok?'#1f3f9e':'#dbe4fb';el.style.color=ok?'#fff':'#3a5aa8';
  const missing=!f?'backend unreachable':[!f.token_loaded&&'TABPFN_TOKEN not loaded',!f.package_installed&&'tabpfn-time-series not installed'].filter(Boolean).join(' · ');
@@ -325,7 +330,7 @@ async function loadOutlook(runId){try{const res=await api('/runs/'+encodeURIComp
 // advanced by each source.events_batch's installs — every install is in the batch, so no polling.
 function seedProvisional(){const r=state.run;if(!r||r.ingestion_mode!=='live_events'||(r.simulated_day||0)>=31){state.provisional=null;return}
  const closed=state.daily.reduce((t,d)=>t+(Number(d.amount)||0),0);state.provisional={date:MONTH_NEXT(r.simulation_date||'2026-09-30'),amount:Math.max(0,(Number(state.metrics?.amount)||0)-closed)}}
-function connectStream(id,after){if(state.source)state.source.close();if(!window.EventSource)return;const source=new EventSource(base+'/runs/'+encodeURIComponent(id)+'/events?after='+after);state.source=source;state.connection='connecting';updateRunUI();source.onopen=()=>{state.connection='live SSE';updateRunUI()};source.onerror=()=>{state.connection='reconnecting / stale';updateRunUI()};const types=['simulation.state_changed','simulation.paused','source.events_batch','revenue.daily_finalized','forecast.evaluated','forecast.requested','forecast.updated','forecast.unavailable','forecast.reference_unavailable','deviation.detected','agent.task_updated','evidence.review_completed','graph.version_committed','action.status_changed','replay.completed'];types.forEach(type=>source.addEventListener(type,event=>{const msg=JSON.parse(event.data);if(Number(msg.event_id)<=state.cursor)return;state.cursor=Number(msg.event_id);applyEvent(msg)}))}
+function connectStream(id,after){if(state.source)state.source.close();if(!window.EventSource)return;const source=new EventSource(base+'/runs/'+encodeURIComponent(id)+'/events?after='+after);state.source=source;state.connection='connecting';updateRunUI();source.onopen=()=>{state.connection='live SSE';updateRunUI()};source.onerror=()=>{state.connection='reconnecting / stale';updateRunUI()};const types=['simulation.state_changed','simulation.paused','source.events_batch','revenue.daily_finalized','forecast.evaluated','forecast.requested','forecast.updated','forecast.unavailable','forecast.reference_unavailable','graph.synced','graph.sync_unavailable','deviation.detected','agent.task_updated','evidence.review_completed','graph.version_committed','action.status_changed','replay.completed'];types.forEach(type=>source.addEventListener(type,event=>{const msg=JSON.parse(event.data);if(Number(msg.event_id)<=state.cursor)return;state.cursor=Number(msg.event_id);applyEvent(msg)}))}
 function applyEvent(msg){const p=msg.payload||{};
  if(msg.event_type==='simulation.state_changed'){state.run={...state.run,...p}}
  if(msg.event_type==='source.events_batch'){state.sourceRows.push(...(p.events||[]));
@@ -341,6 +346,7 @@ function applyEvent(msg){const p=msg.payload||{};
  if(msg.event_type==='forecast.unavailable')state.forecastInfo={state:'unavailable',...p};
  if(msg.event_type==='forecast.requested')state.forecastInfo={state:'requested',...p};
  if(msg.event_type.startsWith('forecast.'))renderTabpfnPill();
+ if(msg.event_type==='graph.synced'||msg.event_type==='graph.sync_unavailable'){state.graphInfo={state:msg.event_type==='graph.synced'?'synced':'unavailable',...p};renderGraphPill()}
  if(msg.event_type==='deviation.detected'&&!state.incidents.some(i=>i.incident_id===p.incident_id)){state.incidents.push({...p,lifecycle_status:'identified',evidence_outcome:'not_evaluated'})}
  if(msg.event_type==='agent.task_updated')state.tasks.push({...p,task_id:msg.event_id});
  if(msg.event_type==='replay.completed')state.comparison=p;
@@ -612,7 +618,7 @@ function selectIncident(id){const inc=state.incidents.find(x=>x.incident_id===id
 function renderAgentLog(){const el=$('agent-log-body');if(!el)return;el.innerHTML=state.tasks.length?state.tasks.map(t=>`<tr><td>—</td><td>${esc(t.agent)}</td><td>${esc(t.evidence_outcome||t.fallback||'Pending')}</td><td>${esc(t.task_id||t.run_id)}</td><td>${esc(t.status)}</td><td>—</td></tr>`).join(''):'<tr><td colspan="6" style="text-align:center;padding:17px">No agent tasks; live provider connections pending.</td></tr>'}
 function renderCompare(){setText($('v15-compare-outcome'),state.comparison?.status||'No validated replay comparison. Original run data will be preserved.');}
 function adapt(){document.title='CHEETAH — Frontend UI Prototype v1.5 · Integration Preview';
- document.querySelector('.global-meta').innerHTML='<span class="pill pill-neutral">October 2026 · aggregate-first</span><span class="pill pill-amber">Integration preview · data pending</span><span class="pill" id="v15-tabpfn-pill" style="background:#dbe4fb;color:#3a5aa8" title="Checking forecast service…">TabPFN · checking…</span>';
+ document.querySelector('.global-meta').innerHTML='<span class="pill pill-neutral">October 2026 · aggregate-first</span><span class="pill pill-amber">Integration preview · data pending</span><span class="pill" id="v15-tabpfn-pill" style="background:#dbe4fb;color:#3a5aa8" title="Checking forecast service…">TabPFN · checking…</span><span class="pill" id="v15-graph-pill" style="background:#dbe4fb;color:#3a5aa8" title="Checking graph connection…">Neo4j · checking…</span>';
  createToolbar();
  // FE-02: replace the active campaign view while preserving the hidden original data module for MVP 2.
  let forecast=$('screen-forecast');first(forecast,'.desc').textContent='Aggregate customer Amount · forecast issued at each day close · immutable next-day reference.';

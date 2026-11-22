@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from models import initialize, SessionLocal, Run, Event, DailyAmount, SourceEvent, ForecastReference, ForecastValue, Command, Incident, Action, AgentTask, RunMetrics
 from agent_runtime import api as agent_api
 from core import serialize_run, emit, MONTH_DAYS, DAY_START, DAY_END, check_31_days, prior, reference_source
-import forecasting
+import forecasting, graph_sync
 
 app=FastAPI(title='CHEETAH v1.5 MVP Backend',version='1.5.0')
 app.add_middleware(CORSMiddleware,allow_origins=os.getenv('CORS_ORIGINS','http://localhost:8000,http://127.0.0.1:8000').split(','),allow_methods=['GET','POST','PATCH'],allow_headers=['Content-Type','Last-Event-ID','Idempotency-Key'])
@@ -63,7 +63,7 @@ class ReferencesRequest(BaseModel):
     references:list[ReferenceRecord]
 
 @app.get('/api/v1/health')
-def health():return {'status':'ok','application':'CHEETAH v1.5','forecast_provider':forecasting.config()['status'],'forecast':forecasting.public_status(),'agent_provider':'not_configured','graph_provider':'not_configured','source_data':'provided_later'}
+def health():return {'status':'ok','application':'CHEETAH v1.5','forecast_provider':forecasting.config()['status'],'forecast':forecasting.public_status(),'agent_provider':'not_configured','graph_provider':graph_sync.config()['status'],'source_data':'provided_later'}
 
 @app.get('/api/v1/runs')
 def list_runs():

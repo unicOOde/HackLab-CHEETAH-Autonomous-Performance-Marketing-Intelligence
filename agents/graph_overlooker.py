@@ -94,6 +94,16 @@ Graph model (aggregated, no node per click or transaction):
   (Ad)-[:PAID_IN_HOUR {{country, device_os, channel, auctions, impressions, clicks, spend, conversions,
   revenue, bid_mult, tracking, budget, planned_share}}]->(Hour {{id: '2026-10-14T09', day, hour, ts}})
   -[:IN_DAY]->(Day {{id, weekday}}); (PlannedEvent {{type, start, end, expected_lift}})-[:APPLIES_TO]->(Ad|Country).
+- Daily marketplace layer (backend/graph_sync.py, written by the backend worker as each streamed day
+  closes, before that day's forecast; closed days only, one dataset at a time):
+  (Dataset {{id, run_id, ingestion_mode, source_kind, last_closed_day}})-[:CLOSED_DAY]->(Day) carries the
+  marketplace day; (Ad)-[:ON_DAY]->(Day) one campaign's day; (Ad)-[:ON_DAY_IN {{country}}]->(Day) one
+  campaign x country day (the Performance Report grain; country = Country.id). All three carry
+  {{dataset_id, day, clicks, transactions, amount, commission, payout, margin, conversion_rate, epc, roas,
+  aov, margin_rate, share_of_amount}}; CLOSED_DAY and ON_DAY add a trailing baseline {{baseline_days,
+  amount_7d_avg, transactions_7d_avg, clicks_7d_avg, conversion_rate_7d_avg, amount_vs_7d_pct,
+  amount_dod_pct}}; CLOSED_DAY also has {{active_campaigns, forecast_point, forecast_lower,
+  forecast_upper, classification, incident_id}}. Ratios are null when the denominator is 0.
 - Metric graph: (Metric {{id, definition, cypher_value, unit}}) with -[:FORMULA {{formula}}]-> (exact
   decomposition) and -[:INFLUENCES {{prior, mechanism, status}}]-> (possible cause) edges down to 'Revenue'.
   Metrics onboarded by the graph engineer also carry origin='onboarding', source_query (read-only Cypher

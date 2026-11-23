@@ -89,6 +89,8 @@ Revenue anomalies in the replay pause the run and are investigated live. → [De
 <sub>Built at HackLab with real Freecash affiliate data from October 2026 · English everywhere · Recommendations only, never auto-executed</sub>
 </div>
 
+**Performance** — live KPI tiles (Amount, Commission, Payout, Margin, Transactions, Campaigns) above the daily Amount chart. Bars are actual daily Amount, the grey dotted line is the forecast locked for each day, the shaded area is its min–max range, and the blue line forecasts the days ahead. A red bar is a day that fell outside its range and opened an incident.
+
 ![CHEETAH Performance screen](Pic_Cheetah_Performance.png)
 
 **Agentic Monitoring** — incidents raised by the daily close, the investigator's hypothesis trail and the incident's position in the Neo4j context graph.

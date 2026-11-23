@@ -759,6 +759,11 @@ adapt();init();
 .o-resolved{background:#e3f5f0;color:#09776c}.o-applied{background:#e3f5f0;color:#09776c}
 .ag-outcome{display:inline-block;border-radius:5px;padding:1px 7px;font-size:9px;font-weight:800;letter-spacing:.4px;text-transform:uppercase}
 .o-fix_proposed{background:#e3f5f0;color:#09776c}.o-no_fix{background:#e9edf2;color:#596a7a}.o-graph_only{background:#f2effa;color:#6d61a8}.o-monitor{background:#fff4e5;color:#a66d1b}
+#screen-incidents .agent-monitoring{margin-top:16px}
+.ag-now{display:flex;align-items:center;gap:10px;padding:10px 16px;margin-bottom:16px}
+.ag-dot{width:8px;height:8px;border-radius:50%;background:#a3b0bc;flex:none}.ag-dot.on{background:#4273c0;animation:ag-pulse 1.2s ease-in-out infinite}
+.ag-now-text{flex:1;min-width:0;font-size:12px;color:#3f5366;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:660px){.ag-now-text{white-space:normal}}
 @media(max-width:1300px){.ag-flow{grid-template-columns:repeat(2,minmax(0,1fr))}.ag-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:900px){.ag-flow,.ag-grid,.ag-two{grid-template-columns:1fr}}
 </style>
@@ -801,6 +806,12 @@ function mount(){
       <select name="unit"><option>ratio</option><option>x</option><option>EUR</option><option>count</option><option>seconds</option></select></div>
       <textarea name="source_query" placeholder="Optional read-only Cypher returning sums per slice. Leave empty for paid telemetry columns: auctions, impressions, clicks, spend, conversions, revenue"></textarea>
       <button class="btn accent ag-small" type="submit">Submit to Buffalo</button></form></div>`}));
+  // Page order: active-agent strip → Kanban → selected ticket → hypothesis + context graphs → Evidence Reviewer,
+  // then the full Agents card and the rest.
+  const now=Object.assign(document.createElement('div'),{className:'card ag-now',id:'ag-now',innerHTML:
+   '<span class="ag-dot" id="ag-now-dot"></span><span class="ag-now-text" id="ag-now-text">Connecting…</span><button class="btn ag-small" id="ag-now-all">All agents ↓</button>'});
+  mon.querySelector('.title-line').after(now,...['.kanban','.incident-summary-v13','.dual-graphs','#v15-evidence-review'].map(s=>mon.querySelector(s)).filter(Boolean));
+  $('ag-now-all').onclick=()=>card.scrollIntoView({behavior:'smooth',block:'start'});
   $('ag-advance').onclick=()=>trigger('sim_clock',{reason:'dashboard: advance 1h'});
   $('ag-jump-go').onclick=()=>{const v=$('ag-jump').value;if(!v)return toast('Pick an hour first');trigger('sim_clock',{reason:'dashboard: jump',payload:{set:v.slice(0,13)+':00'}})};
   $('ag-tabs').onclick=e=>{const t=e.target.dataset.t;if(t){st.tab=t;renderOut()}};
@@ -835,7 +846,16 @@ async function onCardClick(e){const btn=e.target.closest('button[data-act]');if(
   if(st.open.has(agent)){st.open.delete(agent);return renderStatus()}st.open.add(agent);renderStatus();
   try{st.runs[agent]=(await api('/agents/'+agent+'/runs?limit=15')).runs}catch(e){st.runs[agent]=[]}renderStatus()}
 
-function renderStatus(){
+function renderNow(){
+  const b=st.status,dot=$('ag-now-dot'),txt=$('ag-now-text');if(!txt)return;dot.className='ag-dot';
+  if(st.offline||!b){txt.textContent='Backend unavailable · agent status unknown';return}
+  if(b.status==='not_configured'){txt.textContent='Agent bus not set up · '+(b.reason||'');return}
+  const run=b.agents.filter(a=>a.health==='running');
+  if(run.length){dot.classList.add('on');txt.innerHTML=run.map(a=>`<b>${esc(a.name)}</b> running · ${esc(a.status?.last_summary||a.role||'')}`).join(' &nbsp;·&nbsp; ');return}
+  const last=b.agents.filter(a=>a.status?.finished_at).sort((x,y)=>Date.parse(y.status.finished_at)-Date.parse(x.status.finished_at))[0];
+  txt.innerHTML='No agent running · last active: '+(last?`<b>${esc(last.name)}</b> ${esc(rel(last.status.finished_at))} · ${esc(last.status.last_result||'')}`:'none yet');
+}
+function renderStatus(){renderNow();
   const b=st.status,pills=$('ag-pills');if(!pills)return;
   if(st.offline||!b){pills.innerHTML='<span class="pill pill-rose">Backend unavailable</span>';$('ag-flow').innerHTML='<div class="ag-empty">The agent API is not reachable. Start the backend (uvicorn + worker.py) to see live agents.</div>';$('ag-tracka').innerHTML='';return}
   if(b.status==='not_configured'){pills.innerHTML='<span class="pill pill-neutral">Agent bus not set up</span>';$('ag-flow').innerHTML=`<div class="ag-empty">${esc(b.reason)} — it is created when the worker starts.</div>`;$('ag-tracka').innerHTML='';return}

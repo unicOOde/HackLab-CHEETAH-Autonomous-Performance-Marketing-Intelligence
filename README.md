@@ -1,6 +1,41 @@
 # HackLab-CHEETAH-Autonomous-Performance-Marketing-Intelligence
 CHEETAH is a fully agentic performance marketing intelligence system that autonomously forecasts revenue, detects anomalies, investigates performance deviations, and delivers actionable insights through coordinated AI agents.
 
+## Screenshots
+
+**Performance** — live KPI tiles and the daily Amount against the locked forecast band (red bar = deviation outside the band).
+
+![CHEETAH Performance screen](Pic_Cheetah_Performance.png)
+
+**Agentic Monitoring** — incidents raised by the daily close, the investigator's hypothesis trail and the incident's position in the Neo4j context graph.
+
+![CHEETAH Agentic Monitoring screen](Pic_Cheetah_Agentic_Monitoring.png)
+
+**Marketplace** — per-campaign (Game Placement ID) drill-down with live Commission, EPC and per-country revenue.
+
+![CHEETAH Marketplace campaign detail](Pic_Cheetah_Campain_Marketplace.png)
+
+## Input event data
+
+CHEETAH consumes a time-ordered stream of click and install (conversion) events. In `live_events`
+mode the worker inserts each row as the simulated clock passes its `event_time_utc`; daily totals,
+the Neo4j day layer, forecasts and deviation checks are all derived from these rows. Example rows
+from `data/synthetic/full/raw/event_timeline.parquet` (synthetic, calibrated on the real Oct 2026
+Freecash data; ~3.73M rows, of which ~2.6k installs):
+
+| event_time_utc | kind | source_id | game_placement_id | country | amount | commission | payout | margin | vertical | category | event_day |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-01 00:00:06.846 | click | 9000097489 | 00008F | DE | | | | | Retail | Onlineshop | 2026-10-01 |
+| 2026-10-01 00:00:09.738 | click | 9000075627 | 00008F | DE | | | | | Retail | Onlineshop | 2026-10-01 |
+| 2026-10-01 05:37:08.845 | install | 9000005 | 00008F | DE | 30.00 | 2.00 | 0.250 | 1.750 | Retail | Onlineshop | 2026-10-01 |
+| 2026-10-01 05:51:43.705 | install | 9000076 | 00008F | DE | 342.85 | 17.14 | 11.998 | 5.142 | Retail | Onlineshop | 2026-10-01 |
+
+- `source_id` is the Click ID for clicks and the Transaction ID for installs; all IDs are strings.
+- Money columns are only set on installs: `amount` is customer net revenue (excl. tax),
+  `margin = commission − payout`.
+- `vertical` / `category` are placement-level attributes, so clicks carry them too (when the
+  placement is known).
+
 # CHEETAH v1.5 — Integration Foundation
 
 This package implements the approved FE-01–FE-10 **frontend design changes** and a runnable **backend simulation/event foundation**, while preserving all six original routes and the v1.4 original files outside this package.
@@ -48,7 +83,7 @@ default.
 
 **Without Docker** — needs a **Python 3.10+** venv (`app.py`'s `X | None` type hints fail on 3.9, even with `from __future__ import annotations`; see `backend/README.md`). The repo's `.venv-data` is pinned to 3.9 for `cheetah_synth`, so use a separate one:
 1. One-time setup: `python3.10 -m venv .venv-backend && .venv-backend/bin/pip install -r backend/requirements.txt`
-2. `./start_backend.sh` from the repo root (`chmod +x` it first if needed). This starts both the API (`uvicorn app:app --reload --port 8000`) and the worker (`worker.py` — actually executes queued commands and advances simulations; nothing runs without it) in one terminal, and stops both cleanly on `Ctrl+C`. It also **auto-pushes a fresh live demo run** once the API is reachable (a new timestamped `--dataset-id` every time, so restarts never collide) — open `http://127.0.0.1:8000/` right after and there's already something running; set `SKIP_AUTO_PUSH=1` to skip this and push manually instead (see "Test run" below).
+2. `./start_backend.sh` from the repo root (`chmod +x` it first if needed). This starts both the API (`uvicorn app:app --reload --port 8000`) and the worker (`worker.py` — actually executes queued commands and advances simulations; nothing runs without it) in one terminal, and stops both cleanly on `Ctrl+C` (or when the terminal closes). Before starting, it stops any leftover process still holding the agent scheduler lock (`var/agent_bus/locks/scheduler.lock`) or listening on the port. Once started, it waits for this worker's agent scheduler to report alive, and exits with a loud banner if it doesn't. Otherwise every agent would silently show "down" (set `CHEETAH_AGENTS=off` to run without agents and skip the check). Stop it with `Ctrl+C`, not `Ctrl+Z`: a suspended worker keeps the lock. It also **auto-pushes a fresh live demo run** once the API is reachable (a new timestamped `--dataset-id` every time, so restarts never collide) — open `http://127.0.0.1:8000/` right after and there's already something running; set `SKIP_AUTO_PUSH=1` to skip this and push manually instead (see "Test run" below).
 
 Either way, once the server's up you need data loaded before a run can start: either real data (`POST /api/v1/datasets/daily` + `/api/v1/forecasts/outlooks`, 31 October records each — see `backend/README.md`) or the synthetic test run below (already handled automatically by `start_backend.sh` unless you set `SKIP_AUTO_PUSH=1`).
 

@@ -37,7 +37,8 @@ def start_runtime(specs: Optional[Sequence[AgentSpec]] = None, bus: Optional[Age
     scale = float(time_scale if time_scale is not None else os.getenv("CHEETAH_AGENT_TIME_SCALE", 1))
     sched = Scheduler(specs, bus=bus, time_scale=scale)
     if not sched.start():
-        print("agent scheduler: another process already schedules this bus; not starting", flush=True)
+        holder = f" (pid {sched.lock_holder_pid})" if sched.lock_holder_pid else ""
+        print(f"agent scheduler: another process{holder} already schedules this bus; not starting", flush=True)
         return None
     print(f"agent scheduler {sched.id} started: {', '.join(sorted(sched.slots))} "
           f"(time scale {scale:g}, bus {sched.bus.root})", flush=True)

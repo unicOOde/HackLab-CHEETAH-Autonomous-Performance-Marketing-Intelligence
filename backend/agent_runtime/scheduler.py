@@ -175,6 +175,7 @@ class Scheduler:
         self._stop = threading.Event()
         self._loop: Optional[threading.Thread] = None
         self._lock_fh = None
+        self.lock_holder_pid: Optional[int] = None   # set when start() loses the singleton lock
         self._last_heartbeat = -1e18
         self.started_at = iso()
         now = self.clock()
@@ -187,12 +188,19 @@ class Scheduler:
         if fcntl is not None:
             path = self.bus.path("locks", "scheduler.lock")
             path.parent.mkdir(parents=True, exist_ok=True)
-            fh = open(path, "w")
+            fh = open(path, "a+")   # not "w": a failed attempt must not erase the holder's pid
             try:
                 fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
+                fh.seek(0)
+                pid = fh.read().strip()
+                self.lock_holder_pid = int(pid) if pid.isdigit() else None
                 fh.close()
                 return False
+            fh.seek(0)
+            fh.truncate()
+            fh.write(str(os.getpid()))
+            fh.flush()
             self._lock_fh = fh
         self._stop.clear()
         self._loop = threading.Thread(target=self._run_loop, name="agent-scheduler", daemon=True)

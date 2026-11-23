@@ -1,4 +1,5 @@
 """Agent runtime: bus, scheduler triggers, run semantics, health, simulated clock, HTTP API."""
+import os
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
@@ -204,6 +205,7 @@ def test_scheduler_is_a_singleton_per_bus(bus):
     assert a.start()
     try:
         assert not b.start()
+        assert b.lock_holder_pid == os.getpid()
     finally:
         a.stop()
     assert bus.read_status("_scheduler")["stopped"]

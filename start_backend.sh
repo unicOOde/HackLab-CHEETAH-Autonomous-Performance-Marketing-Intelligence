@@ -25,13 +25,37 @@ fi
 
 cd "$REPO_ROOT/backend"
 
+# Pre-flight: a leftover worker from an earlier run (orphaned by a closed terminal, kill -9 or
+# Ctrl+Z) keeps the agent scheduler lock, and the new worker then runs without agents (all show
+# "down"). Stop whatever still holds that lock or listens on our port before starting.
+SCHED_LOCK="${CHEETAH_BUS_DIR:-$REPO_ROOT/var/agent_bus}/locks/scheduler.lock"
+stop_stale() {
+  local pids="$1" what="$2" pid
+  [ -n "$pids" ] || return 0
+  for pid in $pids; do
+    echo "Stopping stale $what: pid $pid ($(ps -p "$pid" -o command= 2>/dev/null || echo '?'))"
+    kill -CONT "$pid" 2>/dev/null || true   # a suspended (Ctrl+Z) process can't handle TERM
+    kill "$pid" 2>/dev/null || true
+  done
+  for _ in 1 2 3 4 5; do
+    local alive=""
+    for pid in $pids; do kill -0 "$pid" 2>/dev/null && alive="$alive $pid"; done
+    [ -n "$alive" ] || return 0
+    sleep 1
+  done
+  kill -9 $alive 2>/dev/null || true
+}
+[ -f "$SCHED_LOCK" ] && stop_stale "$(lsof -t "$SCHED_LOCK" 2>/dev/null || true)" "agent scheduler lock holder"
+stop_stale "$(lsof -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)" "process on port $PORT"
+
+UVICORN_PID="" WORKER_PID=""
 cleanup() {
   echo
   echo "Stopping API and worker..."
-  kill "$UVICORN_PID" "$WORKER_PID" 2>/dev/null || true
-  wait "$UVICORN_PID" "$WORKER_PID" 2>/dev/null || true
+  kill $UVICORN_PID $WORKER_PID 2>/dev/null || true
+  wait $UVICORN_PID $WORKER_PID 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP
 
 "$VENV/bin/uvicorn" app:app --reload --port "$PORT" &
 UVICORN_PID=$!
@@ -41,6 +65,33 @@ WORKER_PID=$!
 
 echo "API:    $API_URL  (pid $UVICORN_PID)"
 echo "Worker: running (pid $WORKER_PID)"
+
+# Post-start check: fail loudly now rather than show "down" agents on stage.
+case "$(echo "${CHEETAH_AGENTS:-on}" | tr '[:upper:]' '[:lower:]')" in
+  off|0|false|no) ;;
+  *)
+    echo "Waiting for the agent scheduler..."
+    SCHED_OK=0
+    for _ in $(seq 1 20); do
+      # alive AND owned by this worker (a stale heartbeat from a just-killed one stays "alive" for 30 s)
+      STATUS="$(curl -sf "$API_URL/api/v1/agents/status" 2>/dev/null || true)"
+      if echo "$STATUS" | grep -q '"alive":true' && echo "$STATUS" | grep -q "\"pid\":$WORKER_PID[,}]"; then
+        SCHED_OK=1; break
+      fi
+      sleep 1
+    done
+    if [ "$SCHED_OK" != "1" ]; then
+      echo "" >&2
+      echo "############################################################" >&2
+      echo "#  AGENT SCHEDULER NOT RUNNING — agents would show 'down'.  #" >&2
+      echo "#  See the worker output above for the reason (lock holder  #" >&2
+      echo "#  pid). Stopping. CHEETAH_AGENTS=off skips this check.     #" >&2
+      echo "############################################################" >&2
+      exit 1
+    fi
+    echo "Agent scheduler: alive"
+    ;;
+esac
 
 if [ "${SKIP_AUTO_PUSH:-0}" != "1" ]; then
   DATA_VENV="$REPO_ROOT/.venv-data"

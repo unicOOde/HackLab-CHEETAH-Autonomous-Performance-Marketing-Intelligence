@@ -88,3 +88,32 @@ Revenue anomalies in the replay pause the run and are investigated live. → [De
 <div align="center">
 <sub>Built at HackLab with real Freecash affiliate data from October 2026 · English everywhere · Recommendations only, never auto-executed</sub>
 </div>
+
+![CHEETAH Performance screen](Pic_Cheetah_Performance.png)
+
+**Agentic Monitoring** — incidents raised by the daily close, the investigator's hypothesis trail and the incident's position in the Neo4j context graph.
+
+![CHEETAH Agentic Monitoring screen](Pic_Cheetah_Agentic_Monitoring.png)
+
+**Marketplace** — per-campaign (Game Placement ID) drill-down with live Commission, EPC and per-country revenue.
+
+![CHEETAH Marketplace campaign detail](Pic_Cheetah_Campain_Marketplace.png)
+
+## Input event data
+
+CHEETAH consumes a time-ordered stream of click and install (conversion) events. In `live_events`
+mode the worker inserts each row as the simulated clock passes its `event_time_utc`; daily totals,
+the Neo4j day layer, forecasts and deviation checks are all derived from these rows. Example rows
+
+| event_time_utc | kind | source_id | game_placement_id | country | amount | commission | payout | margin | vertical | category | event_day |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-01 00:00:06.846 | click | 9000097489 | 00008F | DE | | | | | Retail | Onlineshop | 2026-10-01 |
+| 2026-10-01 00:00:09.738 | click | 9000075627 | 00008F | DE | | | | | Retail | Onlineshop | 2026-10-01 |
+| 2026-10-01 05:37:08.845 | install | 9000005 | 00008F | DE | 30.00 | 2.00 | 0.250 | 1.750 | Retail | Onlineshop | 2026-10-01 |
+| 2026-10-01 05:51:43.705 | install | 9000076 | 00008F | DE | 342.85 | 17.14 | 11.998 | 5.142 | Retail | Onlineshop | 2026-10-01 |
+
+- `source_id` is the Click ID for clicks and the Transaction ID for installs; all IDs are strings.
+- Money columns are only set on installs: `amount` is customer net revenue (excl. tax),
+  `margin = commission − payout`.
+- `vertical` / `category` are placement-level attributes, so clicks carry them too (when the
+  placement is known).

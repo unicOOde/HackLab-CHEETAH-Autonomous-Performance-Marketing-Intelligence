@@ -117,7 +117,7 @@ events into the client `state`.
 
 | File | Role |
 |---|---|
-| `start_backend.sh` | Local development. Starts uvicorn (`--reload`) and `worker.py` together. Unless `SKIP_AUTO_PUSH=1` is set, it then auto-pushes the `full` synthetic run as a fresh `live_events` dataset (`synth-full-live-<timestamp>`) and starts it |
+| `start_backend.sh` | Local development. First stops stale processes holding the agent scheduler lock or the port. Then it starts uvicorn (`--reload`) and `worker.py` together, and exits if this worker's agent scheduler isn't alive within 20 s (`GET /api/v1/agents/status`, skipped with `CHEETAH_AGENTS=off`). Unless `SKIP_AUTO_PUSH=1` is set, it then auto-pushes the `full` synthetic run as a fresh `live_events` dataset (`synth-full-live-<timestamp>`) and starts it |
 | `docker-compose.yml`, `Dockerfile` | Runs Postgres 16, Neo4j 5, `api` and `worker` (all from one image) |
 
 ## 4. Dataflows
@@ -362,6 +362,13 @@ The UI also handles `replay.completed`, but nothing emits it yet.
 
 Python environments: `.venv-backend` (3.10+, `backend/requirements.txt`) and `.venv-data` (3.9,
 numpy/pandas/openpyxl/pyarrow for `cheetah_synth`).
+
+**One agent scheduler per bus.** The worker's scheduler takes an exclusive `flock` on
+`<bus>/locks/scheduler.lock` and writes its pid into that file. A second worker on the same bus runs
+without agents and logs `another process (pid N) already schedules this bus`. If that holder is stale
+(orphaned by `kill -9` or a closed terminal, or suspended with `Ctrl+Z`), every agent shows `down`
+("scheduler not running"). `start_backend.sh` stops such holders before it starts. A second backend,
+e.g. a test or agent session, should use its own bus via `CHEETAH_BUS_DIR`.
 
 ## 9. Target architecture (not yet built)
 

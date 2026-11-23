@@ -233,6 +233,13 @@ there's always a running demo immediately after the script comes up, no manual p
 `data/synthetic/full/raw/event_timeline.parquet` to already exist (see the generator commands
 below) and `.venv-data` to exist alongside `.venv-backend`.
 
+The script also guards against a stale agent scheduler. Before starting, it kills whatever still holds
+`var/agent_bus/locks/scheduler.lock` (the scheduler singleton `flock`; the holder writes its pid
+there) or listens on the port. Afterwards it exits with a banner unless this worker's scheduler reports
+alive in `GET /api/v1/agents/status` (skipped with `CHEETAH_AGENTS=off`). Without that guard, a
+leftover worker keeps the lock and every agent shows `down`. Never run a second backend on the same bus.
+Give it its own `CHEETAH_BUS_DIR`.
+
 To push manually instead — bulk `preloaded_daily` or genuinely live `live_events` (see Backend
 bullets above); always use a dataset_id you haven't used before, since both the daily-amount rows
 and the naive forecast-reference IDs are dataset-scoped and immutable:
